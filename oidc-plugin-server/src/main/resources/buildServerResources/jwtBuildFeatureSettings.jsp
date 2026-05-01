@@ -107,12 +107,12 @@
     <table class="jwt-key-table" id="jwtKeyTable" style="display:none">
       <thead>
         <tr>
+          <th></th>
           <th>Key ID</th>
           <th>Algorithm</th>
           <th>Type</th>
           <th>Use</th>
           <th>Status</th>
-          <th></th>
         </tr>
       </thead>
       <tbody id="jwtKeyTableBody"></tbody>
@@ -262,12 +262,12 @@
       const dataRow = document.createElement('tr');
       dataRow.className = 'jwt-data-row';
       dataRow.innerHTML =
+        '<td class="jwt-expand-cell"><span class="jwt-expand-icon">&#9658;</span></td>' +
         '<td class="jwt-monospace">' + jwtEscape(key.kid || '') + '</td>' +
         '<td><span class="jwt-badge jwt-badge-alg">' + jwtEscape(key.alg || key.kty || '') + '</span></td>' +
         '<td>' + jwtEscape(type) + '</td>' +
         '<td>' + jwtEscape(key.use || 'sig') + '</td>' +
-        '<td><span class="jwt-badge jwt-badge-' + status + '">' + status + '</span></td>' +
-        '<td class="jwt-expand-cell"><span class="jwt-expand-icon">&#9658;</span></td>';
+        '<td><span class="jwt-badge jwt-badge-' + status + '">' + status + '</span></td>';
 
       const jsonRow = document.createElement('tr');
       jsonRow.className = 'jwt-json-row';
