@@ -14,6 +14,18 @@
 
 <div class="jwt-admin">
 
+  <p class="jwt-intro">
+    This plugin makes TeamCity an OIDC provider. During each build, it issues a short-lived,
+    cryptographically signed JWT that cloud services can verify against the public keys below &mdash;
+    so your builds can authenticate to AWS, Azure, Octopus Deploy, and others without storing
+    long-lived credentials anywhere.
+    To use it, add the <strong>OIDC / JWT</strong> build feature to a build configuration.
+    See the setup guides for
+    <a href="https://github.com/OctopusDeploy/teamcity-oidc-plugin/blob/main/docs/aws.md" target="_blank" rel="noopener">AWS</a>,
+    <a href="https://github.com/OctopusDeploy/teamcity-oidc-plugin/blob/main/docs/azure.md" target="_blank" rel="noopener">Azure</a>, and
+    <a href="https://github.com/OctopusDeploy/teamcity-oidc-plugin/blob/main/docs/octopus-deploy.md" target="_blank" rel="noopener">Octopus Deploy</a>.
+  </p>
+
   <%-- ── Section 1: Issuer URL ── --%>
   <div class="jwt-sec">
     <div class="jwt-sec-title">Issuer URL</div>
