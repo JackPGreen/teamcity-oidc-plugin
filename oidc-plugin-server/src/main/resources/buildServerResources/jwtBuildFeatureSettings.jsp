@@ -114,6 +114,7 @@
           <th>Type</th>
           <th>Use</th>
           <th>Status</th>
+          <th>Created</th>
         </tr>
       </thead>
       <tbody id="jwtKeyTableBody"></tbody>
@@ -254,19 +255,23 @@
 
       const dataRow = document.createElement('tr');
       dataRow.className = 'jwt-data-row';
+      const created = key.iat
+        ? new Date(key.iat * 1000).toISOString().slice(0, 16).replace('T', ' ') + ' UTC'
+        : '—';
       dataRow.innerHTML =
         '<td class="jwt-expand-cell"><span class="jwt-expand-icon">&#9658;</span></td>' +
         '<td class="jwt-monospace">' + jwtEscape(key.kid || '') + '</td>' +
         '<td><span class="jwt-badge jwt-badge-alg">' + jwtEscape(key.alg || key.kty || '') + '</span></td>' +
         '<td>' + jwtEscape(type) + '</td>' +
         '<td>' + jwtEscape(key.use || 'sig') + '</td>' +
-        '<td><span class="jwt-badge jwt-badge-' + status + '">' + status + '</span></td>';
+        '<td><span class="jwt-badge jwt-badge-' + status + '">' + status + '</span></td>' +
+        '<td class="jwt-status-line">' + jwtEscape(created) + '</td>';
 
       const jsonRow = document.createElement('tr');
       jsonRow.className = 'jwt-json-row';
       jsonRow.style.display = 'none';
       const jsonCell = document.createElement('td');
-      jsonCell.colSpan = 6;
+      jsonCell.colSpan = 7;
       jsonCell.className = 'jwt-json-cell';
       const pre = document.createElement('pre');
       pre.className = 'jwt-json-inner';

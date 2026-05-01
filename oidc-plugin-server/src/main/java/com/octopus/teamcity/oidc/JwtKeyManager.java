@@ -267,19 +267,21 @@ public class JwtKeyManager {
     }
 
     private static RSAKey generateFreshRsaKey() throws JOSEException {
-        return new RSAKeyGenerator(2048)
+        final var key = new RSAKeyGenerator(2048)
                 .keyUse(KeyUse.SIGNATURE)
                 .algorithm(JWSAlgorithm.RS256)
                 .keyIDFromThumbprint(true)
                 .generate();
+        return new RSAKey.Builder(key).issueTime(new java.util.Date()).build();
     }
 
     private static RSAKey generateFreshRsa3072Key() throws JOSEException {
-        return new RSAKeyGenerator(3072)
+        final var key = new RSAKeyGenerator(3072)
                 .keyUse(KeyUse.SIGNATURE)
                 .algorithm(JWSAlgorithm.RS384)
                 .keyIDFromThumbprint(true)
                 .generate();
+        return new RSAKey.Builder(key).issueTime(new java.util.Date()).build();
     }
 
     private RSAKey loadOrGenerateRsa3072Key() throws IOException, ParseException, JOSEException {
@@ -303,11 +305,12 @@ public class JwtKeyManager {
     }
 
     private static ECKey generateFreshEcKey() throws JOSEException {
-        return new ECKeyGenerator(Curve.P_256)
+        final var key = new ECKeyGenerator(Curve.P_256)
                 .keyUse(KeyUse.SIGNATURE)
                 .algorithm(JWSAlgorithm.ES256)
                 .keyIDFromThumbprint(true)
                 .generate();
+        return new ECKey.Builder(key).issueTime(new java.util.Date()).build();
     }
 
     private void saveKeyToFile(@NotNull final JWK key, @NotNull final String fileName) throws IOException {
