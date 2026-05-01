@@ -81,6 +81,7 @@
         <span class="jwt-hint">6-field cron (sec min hr day month weekday) — e.g. <code>0 0 3 * * SUN</code> = Sundays at 03:00 UTC</span>
         <span id="jwtSaveResult" style="display:none"></span>
         <span id="jwtRotateResult" style="display:none"></span>
+        <span id="jwtRotateWarning" style="display:none"></span>
       </div>
     </div>
 
@@ -189,10 +190,12 @@
     jwtAdminPost(jwtContextPath + '/admin/jwtKeyRotate.html', '',
       function(data) {
         const ok = data.status === 'rotated';
-        const msg = ok
-          ? 'Keys rotated successfully' + (data.warning ? ' \u26a0 ' + data.warning : '')
-          : (data.message || 'Rotation failed');
-        jwtShowResult('jwtRotateResult', ok ? 'ok' : 'error', msg);
+        jwtShowResult('jwtRotateResult', ok ? 'ok' : 'error', ok ? 'Keys rotated successfully' : (data.message || 'Rotation failed'));
+        if (ok && data.warning) {
+          jwtShowResult('jwtRotateWarning', 'warn', data.warning);
+        } else {
+          document.getElementById('jwtRotateWarning').style.display = 'none';
+        }
         if (ok) {
           const now = new Date();
           const formatted = now.getUTCFullYear() + '-' +
