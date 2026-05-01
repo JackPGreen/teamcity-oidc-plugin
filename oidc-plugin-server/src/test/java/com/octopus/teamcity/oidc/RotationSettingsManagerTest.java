@@ -18,17 +18,13 @@ public class RotationSettingsManagerTest {
 
     @Test
     void returnsDefaultsWhenFileAbsent() {
-        final var before = Instant.now();
         final var mgr = new RotationSettingsManager(tempDir);
         final var settings = mgr.load();
-        final var after = Instant.now();
         assertThat(settings.enabled()).isTrue();
         assertThat(settings.cronSchedule()).isEqualTo(RotationSettings.DEFAULT_SCHEDULE);
-        // lastRotatedAt must not be null on first install — a null value is treated
-        // as epoch 0 by the scheduler, causing immediate key rotation on startup.
-        assertThat(settings.lastRotatedAt()).isNotNull()
-                .isAfterOrEqualTo(before)
-                .isBeforeOrEqualTo(after);
+        // null means "never rotated" — the scheduler treats null as now (not epoch),
+        // so no immediate rotation fires on first install.
+        assertThat(settings.lastRotatedAt()).isNull();
     }
 
     @Test

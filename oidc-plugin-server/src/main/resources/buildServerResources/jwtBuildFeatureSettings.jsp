@@ -201,6 +201,7 @@
             String(now.getUTCHours()).padStart(2, '0') + ':' +
             String(now.getUTCMinutes()).padStart(2, '0') + ' UTC';
           document.getElementById('jwtLastRotatedDate').textContent = formatted;
+          jwtRefreshKeyTable();
         }
       },
       function() { jwtShowResult('jwtRotateResult', 'error', 'Request failed'); }
@@ -229,28 +230,14 @@
       });
   }
 
-  (function() {
-    const raw = '${jwksBase64}';
-    if (!raw) {
-      document.getElementById('jwtKeyCount').textContent = 'Keys not yet available (server startup in progress)';
-      return;
-    }
-
-    let jwks;
-    try {
-      jwks = JSON.parse(atob(raw));
-    } catch (e) {
-      document.getElementById('jwtKeyCount').textContent = 'Could not parse JWKS data';
-      return;
-    }
-    const keys = jwks.keys || [];
-
+  function jwtRenderKeys(keys) {
     document.getElementById('jwtKeyCount').textContent =
       keys.length + ' active key' + (keys.length !== 1 ? 's' : '');
     document.getElementById('jwtJwksDownload').style.display = '';
     document.getElementById('jwtKeyTable').style.display = '';
 
     const tbody = document.getElementById('jwtKeyTableBody');
+    tbody.innerHTML = '';
     const seenAlgs = new Set();
 
     keys.forEach(function(key) {
@@ -294,5 +281,30 @@
       tbody.appendChild(dataRow);
       tbody.appendChild(jsonRow);
     });
+  }
+
+  function jwtRefreshKeyTable() {
+    fetch(jwtContextPath + '/.well-known/jwks.json')
+      .then(function(r) { return r.json(); })
+      .then(function(jwks) { jwtRenderKeys(jwks.keys || []); })
+      .catch(function() {
+        document.getElementById('jwtKeyCount').textContent = 'Could not refresh JWKS data';
+      });
+  }
+
+  (function() {
+    const raw = '${jwksBase64}';
+    if (!raw) {
+      document.getElementById('jwtKeyCount').textContent = 'Keys not yet available (server startup in progress)';
+      return;
+    }
+    let jwks;
+    try {
+      jwks = JSON.parse(atob(raw));
+    } catch (e) {
+      document.getElementById('jwtKeyCount').textContent = 'Could not parse JWKS data';
+      return;
+    }
+    jwtRenderKeys(jwks.keys || []);
   })();
 </script>
