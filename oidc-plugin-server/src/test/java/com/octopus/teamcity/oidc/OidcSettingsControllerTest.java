@@ -93,7 +93,7 @@ public class OidcSettingsControllerTest {
     void rejectsNonHttpsUrl() throws Exception {
         final var mgr = new OidcSettingsManager(tempDir);
         final var json = postForJson(mgr, "http://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isFalse();
+        assertThat((String) json.get("state")).isEqualTo("error");
         assertThat((String) json.get("message")).contains("HTTPS");
         assertThat(mgr.load()).isEmpty();
     }
@@ -101,7 +101,7 @@ public class OidcSettingsControllerTest {
     @Test
     void rejectsInvalidUrl() throws Exception {
         final var json = postForJson(new OidcSettingsManager(tempDir), "not a url");
-        assertThat((Boolean) json.get("ok")).isFalse();
+        assertThat((String) json.get("state")).isEqualTo("error");
     }
 
     @Test
@@ -109,7 +109,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         mockHttpStatus(200);
         final var json = postForJson(mgr, "https://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isTrue();
+        assertThat((String) json.get("state")).isEqualTo("ok");
         assertThat(mgr.load()).contains("https://ci.example.com");
     }
 
@@ -118,7 +118,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         when(httpClient.send(any(), any())).thenThrow(new java.net.ConnectException("refused"));
         final var json = postForJson(mgr, "https://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isTrue();
+        assertThat((String) json.get("state")).isEqualTo("warn");
         assertThat((String) json.get("message")).containsIgnoringCase("could not be verified");
         assertThat(mgr.load()).contains("https://ci.example.com");
     }
@@ -128,7 +128,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         mockHttpStatus(404);
         final var json = postForJson(mgr, "https://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isFalse();
+        assertThat((String) json.get("state")).isEqualTo("error");
         assertThat((String) json.get("message")).contains("404");
         assertThat(mgr.load()).isEmpty();
     }
@@ -138,7 +138,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         mockHttpStatus(301);
         final var json = postForJson(mgr, "https://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isFalse();
+        assertThat((String) json.get("state")).isEqualTo("error");
         assertThat((String) json.get("message")).contains("301");
         assertThat(mgr.load()).isEmpty();
     }
@@ -148,7 +148,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         mockHttpStatus(503);
         final var json = postForJson(mgr, "https://ci.example.com");
-        assertThat((Boolean) json.get("ok")).isFalse();
+        assertThat((String) json.get("state")).isEqualTo("error");
         assertThat((String) json.get("message")).contains("503");
         assertThat(mgr.load()).isEmpty();
     }
@@ -158,7 +158,7 @@ public class OidcSettingsControllerTest {
         final var mgr = new OidcSettingsManager(tempDir);
         mgr.save("https://ci.example.com");
         final var json = postForJson(mgr, "");
-        assertThat((Boolean) json.get("ok")).isTrue();
+        assertThat((String) json.get("state")).isEqualTo("ok");
         assertThat(mgr.load()).isEmpty();
     }
 

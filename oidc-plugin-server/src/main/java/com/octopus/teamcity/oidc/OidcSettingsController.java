@@ -77,19 +77,19 @@ public class OidcSettingsController extends BaseController {
         final var user = SessionUser.getUser(request);
         if (user == null) {
             response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
-            writeJson(response, false, "Not authenticated");
+            writeJson(response, "error", "Not authenticated");
             return null;
         }
         if (!user.isPermissionGrantedGlobally(Permission.CHANGE_SERVER_SETTINGS)) {
             response.setStatus(HttpServletResponse.SC_FORBIDDEN);
-            writeJson(response, false, "Access denied");
+            writeJson(response, "error", "Access denied");
             return null;
         }
 
         final var rawUrl = request.getParameter("overrideIssuerUrl");
         if (rawUrl == null || rawUrl.isBlank()) {
             settingsManager.save(null);
-            writeJson(response, true, "Override cleared");
+            writeJson(response, "ok", "Override cleared");
             return null;
         }
 
@@ -99,12 +99,12 @@ public class OidcSettingsController extends BaseController {
         try {
             uri = URI.create(normalised);
         } catch (final IllegalArgumentException e) {
-            writeJson(response, false, "Invalid URL: " + e.getMessage());
+            writeJson(response, "error", "Invalid URL: " + e.getMessage());
             return null;
         }
 
         if (!"https".equalsIgnoreCase(uri.getScheme())) {
-            writeJson(response, false, "The issuer URL must use HTTPS");
+            writeJson(response, "error", "The issuer URL must use HTTPS");
             return null;
         }
 
@@ -113,13 +113,13 @@ public class OidcSettingsController extends BaseController {
         switch (result) {
             case Ok ignored -> {
                 settingsManager.save(normalised);
-                writeJson(response, true, "Settings saved");
+                writeJson(response, "ok", "Settings saved");
             }
             case Warning w -> {
                 settingsManager.save(normalised);
-                writeJson(response, true, w.message());
+                writeJson(response, "warn", w.message());
             }
-            case Err err -> writeJson(response, false, err.message());
+            case Err err -> writeJson(response, "error", err.message());
         }
 
         return null;
@@ -149,9 +149,9 @@ public class OidcSettingsController extends BaseController {
         }
     }
 
-    private static void writeJson(final HttpServletResponse response, final boolean ok, final String message) throws IOException {
+    private static void writeJson(final HttpServletResponse response, final String state, final String message) throws IOException {
         final var json = new JSONObject();
-        json.put("ok", ok);
+        json.put("state", state);
         json.put("message", message);
         response.getWriter().write(json.toJSONString());
     }
