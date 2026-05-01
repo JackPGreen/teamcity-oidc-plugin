@@ -138,7 +138,10 @@ public class OidcSettingsController extends BaseController {
             if (status >= 200 && status < 300) {
                 return new Ok();
             }
-            return new Err("URL returned HTTP " + status + " — enter the final destination URL with no redirects");
+            if (status >= 300 && status < 400) {
+                return new Err("URL returned HTTP " + status + " — enter the final destination URL with no redirects");
+            }
+            return new Err("URL returned HTTP " + status + " — check the URL is correct and publicly accessible");
         } catch (final IOException e) {
             LOG.log(Level.WARNING, "JWT plugin: reachability check failed for " + discoveryUrl, e);
             return new Warning("URL saved but could not be verified — TeamCity may not be able to reach it from inside the network");
