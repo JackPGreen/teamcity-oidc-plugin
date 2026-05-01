@@ -1,5 +1,4 @@
 <%@ include file="/include-internal.jsp"%>
-<%@ taglib prefix="props" tagdir="/WEB-INF/tags/props" %>
 <%@ taglib prefix="c" uri="http://java.sun.com/jsp/jstl/core" %>
 <link rel="stylesheet" href="${pageContext.request.contextPath}/plugins/teamcity-oidc-plugin/jwt-admin.css"/>
 <%@ page import="jetbrains.buildServer.serverSide.auth.Permission" %>
@@ -13,113 +12,109 @@
     }
 %>
 
-<h2>OIDC Issuer URL</h2>
+<div class="jwt-admin">
 
-<table>
-  <tr>
-    <td>
-      <label for="overrideIssuerUrl">Issuer base URL override:</label><br/>
-      <input type="text" id="overrideIssuerUrl" size="50" value="<c:out value="${overrideIssuerUrl}"/>"/>
-      &nbsp;
-      <input type="button" value="Save" onclick="jwtSaveOidcSettings()"/>
-      &nbsp;
-      <input type="button" value="Reset to default" onclick="jwtClearOidcSettings()"/>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <span class="jwt-hint">
-        Leave blank to use the TeamCity root URL.
-        Set this if TeamCity is behind a reverse proxy and the public-facing URL
-        differs from the root URL.
-      </span>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      Effective issuer URL: <strong><c:out value="${effectiveIssuerUrl}"/></strong>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <span id="jwtOidcSettingsResult" style="display:none"></span>
-    </td>
-  </tr>
-</table>
+  <%-- ── Section 1: Issuer URL ── --%>
+  <div class="jwt-sec">
+    <div class="jwt-sec-title">Issuer URL</div>
 
-<h2>Key Rotation</h2>
+    <div class="jwt-field-row">
+      <div class="jwt-field-label"><label for="overrideIssuerUrl">Override URL</label></div>
+      <div class="jwt-field-body">
+        <div class="jwt-field-inline">
+          <input class="jwt-inp jwt-inp-url" type="text" id="overrideIssuerUrl"
+                 value="<c:out value="${overrideIssuerUrl}"/>" placeholder="https://ci.example.com"/>
+          <button class="jwt-btn jwt-btn-primary" type="button" onclick="jwtSaveOidcSettings()">Save</button>
+          <button class="jwt-btn jwt-btn-danger" type="button" onclick="jwtClearOidcSettings()">Clear</button>
+        </div>
+        <span class="jwt-hint">Leave blank to use the TeamCity root URL. Set this only if TeamCity is behind a reverse proxy and the public-facing URL differs from the root URL.</span>
+        <span id="jwtOidcSettingsResult" style="display:none"></span>
+      </div>
+    </div>
 
-<table>
-  <tr>
-    <td>
-      <label>
-        <input type="checkbox" id="rotationEnabled" <c:if test="${rotationEnabled}">checked</c:if>>
-        Enable automatic rotation
-      </label>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <label for="cronSchedule">Cron schedule (6-field: second minute hour day month weekday):</label><br/>
-      <input type="text" id="cronSchedule" size="25" value="<c:out value="${cronSchedule}"/>"/>
-      &nbsp;
-      <input type="button" value="Save" onclick="jwtSaveRotationSettings()"/>
-      &nbsp;
-      <input type="button" value="Rotate now" onclick="jwtRotateNow()"/>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <span id="jwtLastRotated" style="color:#555;font-size:0.9em">
-        Last rotated: <span id="jwtLastRotatedDate"><c:out value="${lastRotatedAt}"/></span>
-        <c:if test="${not empty nextDue}">
-          &nbsp;|&nbsp; Next due: <c:out value="${nextDue}"/>
-        </c:if>
-      </span>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <span id="jwtSaveResult" style="display:none"></span>
-      &nbsp;
-      <span id="jwtRotateResult" style="display:none"></span>
-    </td>
-  </tr>
-</table>
+    <div class="jwt-field-row">
+      <div class="jwt-field-label">Effective URL</div>
+      <div class="jwt-field-body">
+        <code class="jwt-effective-url"><c:out value="${effectiveIssuerUrl}"/>/.well-known/openid-configuration</code>
+      </div>
+    </div>
+  </div>
+
+  <%-- ── Section 2: Key Rotation ── --%>
+  <div class="jwt-sec">
+    <div class="jwt-sec-title">Key Rotation</div>
+
+    <div class="jwt-field-row">
+      <div class="jwt-field-label">Auto-rotation</div>
+      <div class="jwt-field-body">
+        <label class="jwt-checkbox-label">
+          <input type="checkbox" id="rotationEnabled" <c:if test="${rotationEnabled}">checked</c:if>>
+          Enable automatic rotation
+        </label>
+      </div>
+    </div>
+
+    <div class="jwt-field-row">
+      <div class="jwt-field-label"><label for="cronSchedule">Schedule</label></div>
+      <div class="jwt-field-body">
+        <div class="jwt-field-inline">
+          <input class="jwt-inp jwt-inp-cron" type="text" id="cronSchedule"
+                 value="<c:out value="${cronSchedule}"/>"/>
+          <button class="jwt-btn jwt-btn-primary" type="button" onclick="jwtSaveRotationSettings()">Save</button>
+          <button class="jwt-btn" type="button" onclick="jwtRotateNow()">Rotate now</button>
+        </div>
+        <span class="jwt-hint">6-field cron (sec min hr day month weekday) — e.g. <code>0 0 3 * * SUN</code> = Sundays at 03:00 UTC</span>
+        <span id="jwtSaveResult" style="display:none"></span>
+        <span id="jwtRotateResult" style="display:none"></span>
+      </div>
+    </div>
+
+    <div class="jwt-field-row">
+      <div class="jwt-field-label"></div>
+      <div class="jwt-field-body">
+        <span class="jwt-status-line">
+          Last rotated: <span id="jwtLastRotatedDate"><c:out value="${lastRotatedAt}"/></span><c:if test="${not empty nextDue}"> &nbsp;·&nbsp; Next due: <c:out value="${nextDue}"/></c:if>
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <%-- ── Section 3: JWKS ── --%>
+  <div class="jwt-sec">
+    <div class="jwt-sec-title">JWKS</div>
+
+    <div class="jwt-jwks-toolbar">
+      <span id="jwtKeyCount" class="jwt-key-count"></span>
+      <a class="jwt-btn" id="jwtJwksDownload"
+         href="data:application/json;charset=utf-8;base64,${jwksBase64}"
+         download="jwks.json" style="display:none">&#x2B07; Download jwks.json</a>
+    </div>
+    <table class="jwt-key-table" id="jwtKeyTable" style="display:none">
+      <thead>
+        <tr>
+          <th>Key ID</th>
+          <th>Algorithm</th>
+          <th>Type</th>
+          <th>Use</th>
+          <th>Status</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody id="jwtKeyTableBody"></tbody>
+    </table>
+  </div>
+
+</div>
 
 <script>
   const jwtContextPath = '${pageContext.request.contextPath}';
 
-  function jwtSaveRotationSettings() {
-    const enabled = document.getElementById('rotationEnabled').checked;
-    const schedule = document.getElementById('cronSchedule').value;
-    jwtAdminPost(jwtContextPath + '/admin/jwtRotationSettings.html',
-      'enabled=' + enabled + '&cronSchedule=' + encodeURIComponent(schedule),
-      function(data) { jwtShowResult('jwtSaveResult', data.ok, data.message); },
-      function() { jwtShowResult('jwtSaveResult', false, 'Request failed'); }
-    );
-  }
-
-  function jwtRotateNow() {
-    jwtAdminPost(jwtContextPath + '/admin/jwtKeyRotate.html', '',
-      function(data) {
-        const ok = data.status === 'rotated';
-        const msg = ok
-          ? 'Keys rotated successfully' + (data.warning ? ' \u26a0 ' + data.warning : '')
-          : (data.message || 'Rotation failed');
-        jwtShowResult('jwtRotateResult', ok, msg);
-        if (ok) {
-          const now = new Date();
-          const formatted = now.getUTCFullYear() + '-' +
-            String(now.getUTCMonth() + 1).padStart(2, '0') + '-' +
-            String(now.getUTCDate()).padStart(2, '0') + ' ' +
-            String(now.getUTCHours()).padStart(2, '0') + ':' +
-            String(now.getUTCMinutes()).padStart(2, '0') + ' UTC';
-          document.getElementById('jwtLastRotatedDate').textContent = formatted;
-        }
-      },
-      function() { jwtShowResult('jwtRotateResult', false, 'Request failed'); }
-    );
+  function jwtShowResult(elementId, state, message) {
+    const el = document.getElementById(elementId);
+    const prefix = state === 'ok' ? '✓ ' : state === 'warn' ? '⚠ ' : '✗ ';
+    el.textContent = prefix + message;
+    el.className = 'jwt-msg jwt-msg-' + state;
+    el.style.display = 'inline-flex';
   }
 
   function jwtAdminPost(url, body, onSuccess, onError) {
@@ -138,24 +133,18 @@
     .catch(onError);
   }
 
-  function jwtShowResult(elementId, ok, message) {
-    const el = document.getElementById(elementId);
-    el.textContent = message;
-    el.style.color = ok ? 'green' : 'red';
-    el.style.display = 'inline';
-  }
-
   function jwtSaveOidcSettings() {
     const url = document.getElementById('overrideIssuerUrl').value;
     jwtAdminPost(jwtContextPath + '/admin/jwtOidcSettings.html',
       'overrideIssuerUrl=' + encodeURIComponent(url),
       function(data) {
-        jwtShowResult('jwtOidcSettingsResult', data.ok, data.message);
+        const state = data.state || (data.ok ? 'ok' : 'error');
+        jwtShowResult('jwtOidcSettingsResult', state, data.message);
         if (data.ok) {
           document.getElementById('overrideIssuerUrl').value = url.trim().replace(/\/+$/, '');
         }
       },
-      function() { jwtShowResult('jwtOidcSettingsResult', false, 'Request failed'); }
+      function() { jwtShowResult('jwtOidcSettingsResult', 'error', 'Request failed'); }
     );
   }
 
@@ -163,20 +152,129 @@
     document.getElementById('overrideIssuerUrl').value = '';
     jwtAdminPost(jwtContextPath + '/admin/jwtOidcSettings.html',
       'overrideIssuerUrl=',
-      function(data) { jwtShowResult('jwtOidcSettingsResult', data.ok, data.message); },
-      function() { jwtShowResult('jwtOidcSettingsResult', false, 'Request failed'); }
+      function(data) {
+        const state = data.state || (data.ok ? 'ok' : 'error');
+        jwtShowResult('jwtOidcSettingsResult', state, data.message);
+      },
+      function() { jwtShowResult('jwtOidcSettingsResult', 'error', 'Request failed'); }
     );
   }
-</script>
 
-<h2>JWKS</h2>
-<pre id="jwtJwksDisplay" style="white-space:pre-wrap;word-break:break-all;max-width:100%;overflow-x:auto;"></pre>
-<a href="data:application/json;charset=utf-8;base64,${jwksBase64}" download="jwks.json">download</a>
-<script>
+  function jwtSaveRotationSettings() {
+    const enabled = document.getElementById('rotationEnabled').checked;
+    const schedule = document.getElementById('cronSchedule').value;
+    jwtAdminPost(jwtContextPath + '/admin/jwtRotationSettings.html',
+      'enabled=' + enabled + '&cronSchedule=' + encodeURIComponent(schedule),
+      function(data) { jwtShowResult('jwtSaveResult', data.ok ? 'ok' : 'error', data.message); },
+      function() { jwtShowResult('jwtSaveResult', 'error', 'Request failed'); }
+    );
+  }
+
+  function jwtRotateNow() {
+    jwtAdminPost(jwtContextPath + '/admin/jwtKeyRotate.html', '',
+      function(data) {
+        const ok = data.status === 'rotated';
+        const msg = ok
+          ? 'Keys rotated successfully' + (data.warning ? ' ⚠ ' + data.warning : '')
+          : (data.message || 'Rotation failed');
+        jwtShowResult('jwtRotateResult', ok ? 'ok' : 'error', msg);
+        if (ok) {
+          const now = new Date();
+          const formatted = now.getUTCFullYear() + '-' +
+            String(now.getUTCMonth() + 1).padStart(2, '0') + '-' +
+            String(now.getUTCDate()).padStart(2, '0') + ' ' +
+            String(now.getUTCHours()).padStart(2, '0') + ':' +
+            String(now.getUTCMinutes()).padStart(2, '0') + ' UTC';
+          document.getElementById('jwtLastRotatedDate').textContent = formatted;
+        }
+      },
+      function() { jwtShowResult('jwtRotateResult', 'error', 'Request failed'); }
+    );
+  }
+
+  function jwtEscape(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function jwtHighlightJson(json) {
+    // " is intentionally not escaped — the regex patterns below depend on literal " delimiters,
+    // and JWK values (base64url, algorithm names) never contain " characters.
+    const escaped = json
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+    return escaped
+      .replace(/"([^"]+)"(\s*:)/g, '<span class="jwt-j-key">"$1"</span>$2')
+      .replace(/:\s*"([^"]*)"/g, function(m, v) {
+        return ': <span class="jwt-j-str">"' + v + '"</span>';
+      });
+  }
+
   (function() {
+    const raw = '${jwksBase64}';
+    if (!raw) {
+      document.getElementById('jwtKeyCount').textContent = 'Keys not yet available (server startup in progress)';
+      return;
+    }
+
+    let jwks;
     try {
-      const raw = atob('${jwksBase64}');
-      document.getElementById('jwtJwksDisplay').textContent = JSON.stringify(JSON.parse(raw), null, 2);
-    } catch(e) { /* jwksBase64 empty or invalid — leave blank */ }
+      jwks = JSON.parse(atob(raw));
+    } catch (e) {
+      document.getElementById('jwtKeyCount').textContent = 'Could not parse JWKS data';
+      return;
+    }
+    const keys = jwks.keys || [];
+
+    document.getElementById('jwtKeyCount').textContent =
+      keys.length + ' active key' + (keys.length !== 1 ? 's' : '');
+    document.getElementById('jwtJwksDownload').style.display = '';
+    document.getElementById('jwtKeyTable').style.display = '';
+
+    const tbody = document.getElementById('jwtKeyTableBody');
+
+    keys.forEach(function(key, idx) {
+      const status = idx === 0 ? 'current' : 'retiring';
+      const type = key.kty === 'EC'    ? 'EC ' + (key.crv || '?')
+                 : key.alg === 'RS256' ? 'RSA-2048'
+                 : key.alg === 'RS384' ? 'RSA-3072'
+                 : key.kty || '?';
+
+      const dataRow = document.createElement('tr');
+      dataRow.className = 'jwt-data-row';
+      dataRow.innerHTML =
+        '<td class="jwt-monospace">' + jwtEscape(key.kid || '') + '</td>' +
+        '<td><span class="jwt-badge jwt-badge-alg">' + jwtEscape(key.alg || key.kty || '') + '</span></td>' +
+        '<td>' + jwtEscape(type) + '</td>' +
+        '<td>' + jwtEscape(key.use || 'sig') + '</td>' +
+        '<td><span class="jwt-badge jwt-badge-' + status + '">' + status + '</span></td>' +
+        '<td><span class="jwt-expand-link">▶ View JSON</span></td>';
+
+      const jsonRow = document.createElement('tr');
+      jsonRow.className = 'jwt-json-row';
+      jsonRow.style.display = 'none';
+      const jsonCell = document.createElement('td');
+      jsonCell.colSpan = 6;
+      jsonCell.className = 'jwt-json-cell';
+      const pre = document.createElement('pre');
+      pre.className = 'jwt-json-inner';
+      pre.innerHTML = jwtHighlightJson(JSON.stringify(key, null, 2));
+      jsonCell.appendChild(pre);
+      jsonRow.appendChild(jsonCell);
+
+      const expandBtn = dataRow.querySelector('.jwt-expand-link');
+      expandBtn.addEventListener('click', function() {
+        const open = jsonRow.style.display !== 'none';
+        jsonRow.style.display = open ? 'none' : '';
+        expandBtn.textContent = open ? '▶ View JSON' : '▼ Hide JSON';
+      });
+
+      tbody.appendChild(dataRow);
+      tbody.appendChild(jsonRow);
+    });
   })();
 </script>
