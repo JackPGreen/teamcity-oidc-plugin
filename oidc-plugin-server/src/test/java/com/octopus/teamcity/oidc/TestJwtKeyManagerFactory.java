@@ -1,10 +1,12 @@
 package com.octopus.teamcity.oidc;
 
 import jetbrains.buildServer.serverSide.ServerPaths;
+import jetbrains.buildServer.serverSide.crypt.Encryption;
 import jetbrains.buildServer.serverSide.crypt.EncryptionKeysStorage;
 import jetbrains.buildServer.serverSide.crypt.impl.CustomKeyEncryption;
 import org.jetbrains.annotations.NotNull;
 
+import java.time.Clock;
 import java.util.Map;
 
 class TestJwtKeyManagerFactory {
@@ -13,15 +15,23 @@ class TestJwtKeyManagerFactory {
     private static final Map<String, byte[]> KEYS = Map.of(KEY_ID, KEY);
 
     static JwtKeyManager create(@NotNull final ServerPaths serverPaths) {
-        final var customKeyEncryption = new CustomKeyEncryption(new EncryptionKeysStorage() {
-            @Override public Map<String, byte[]> getKeys() { return KEYS; }
-            @Override public @NotNull String getDefaultKeyId() { return KEY_ID; }
-            @Override public void reloadSettings() {}
-        });
-        final var manager = new JwtKeyManager(serverPaths, customKeyEncryption);
+        return create(serverPaths, Clock.systemUTC());
+    }
+
+    static JwtKeyManager create(@NotNull final ServerPaths serverPaths, @NotNull final Clock clock) {
+        final var manager = new JwtKeyManager(serverPaths, testEncryption(), clock);
         manager.notifyTeamCityServerStartupCompleted();
         if (!manager.isReady()) throw new RuntimeException(
                 "JwtKeyManager failed to initialize in test — see log for details");
         return manager;
     }
+
+    static Encryption testEncryption() {
+        return new CustomKeyEncryption(new EncryptionKeysStorage() {
+            @Override public Map<String, byte[]> getKeys() { return KEYS; }
+            @Override public @NotNull String getDefaultKeyId() { return KEY_ID; }
+            @Override public void reloadSettings() {}
+        });
+    }
+
 }

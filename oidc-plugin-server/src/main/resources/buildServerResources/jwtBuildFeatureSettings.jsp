@@ -108,7 +108,7 @@
       <div class="jwt-field-label"></div>
       <div class="jwt-field-body">
         <span class="jwt-status-line">
-          Last rotated: <span id="jwtLastRotatedDate"><c:out value="${lastRotatedAt}"/></span><c:if test="${not empty nextDue}"> &nbsp;&middot;&nbsp; Next due: <c:out value="${nextDue}"/></c:if>
+          Last rotated: <span id="jwtLastRotatedDate"><c:out value="${lastRotatedAt}"/></span><span id="jwtWarmupAnnotation"><c:if test="${hasPending}"> (warming up - new key active at <c:out value="${pendingActivateAt}"/>)</c:if></span><c:if test="${not empty nextDue}"> &nbsp;&middot;&nbsp; Next due: <c:out value="${nextDue}"/></c:if>
         </span>
       </div>
     </div>
@@ -117,6 +117,22 @@
   <%-- ── Section 3: JWKS ── --%>
   <div class="jwt-sec">
     <div class="jwt-sec-title">JWKS</div>
+
+    <div class="jwt-field-row">
+      <div class="jwt-field-label"><label for="jwksCacheLifetimeMinutes">Cache lifetime (minutes)</label></div>
+      <div class="jwt-field-body">
+        <div class="jwt-field-inline">
+          <input class="jwt-inp" type="number" id="jwksCacheLifetimeMinutes"
+                 min="<c:out value="${jwksCacheLifetimeMin}"/>"
+                 max="<c:out value="${jwksCacheLifetimeMax}"/>"
+                 style="width:7em;"
+                 value="<c:out value="${jwksCacheLifetimeMinutes}"/>"/>
+          <button class="jwt-btn jwt-btn-primary" type="button" onclick="jwtSaveJwksCacheLifetime()">Save</button>
+        </div>
+        <span class="jwt-hint">Sent as the <code>Cache-Control: max-age</code> on the JWKS and discovery endpoints (in seconds = minutes &times; 60), and is also the post-rotation warmup window: a newly-rotated key is published in JWKS immediately but does not sign tokens until this many minutes have passed. Default <c:out value="${jwksCacheLifetimeDefault}"/>; range <c:out value="${jwksCacheLifetimeMin}"/>&#8211;<c:out value="${jwksCacheLifetimeMax}"/>.</span>
+        <span id="jwtJwksCacheResult" style="display:none"></span>
+      </div>
+    </div>
 
     <div class="jwt-jwks-toolbar">
       <span id="jwtKeyCount" class="jwt-key-count"></span>
@@ -164,8 +180,12 @@
       },
       body: body
     })
-    .then(r => { if (!r.ok) { throw new Error('HTTP ' + r.status); } return r.json(); })
-    .then(onSuccess)
+    // The controllers return JSON for both success (2xx) and known-case errors
+    // (400 validation, 409 warmup-in-progress) — pass the parsed body to
+    // onSuccess regardless of status code so callers can render the structured
+    // message. Only unexpected failures (network, non-JSON body e.g. 5xx HTML)
+    // fall through to onError.
+    .then(r => r.json().then(onSuccess, onError))
     .catch(onError);
   };
 
@@ -201,6 +221,15 @@
     );
   };
 
+  const jwtSaveJwksCacheLifetime = () => {
+    const value = document.getElementById('jwksCacheLifetimeMinutes').value;
+    jwtAdminPost(jwtContextPath + '/admin/jwtOidcSettings.html',
+      'jwksCacheLifetimeMinutes=' + encodeURIComponent(value),
+      data => jwtShowResult('jwtJwksCacheResult', data.state, data.message),
+      () => jwtShowResult('jwtJwksCacheResult', 'error', 'Request failed')
+    );
+  };
+
   const jwtSaveRotationSettings = () => {
     const enabled = document.getElementById('rotationEnabled').checked;
     const schedule = document.getElementById('cronSchedule').value;
@@ -211,25 +240,46 @@
     );
   };
 
+  // Format an instant (Date or ISO-8601 string) as 'YYYY-MM-DD HH:MM UTC' to match
+  // the server-side rendering (see JwtBuildFeatureAdminPage.FMT). Used wherever JS
+  // updates a DOM element whose value the JSP would otherwise have rendered.
+  const jwtFormatUtcMinute = instantOrIso => {
+    const d = instantOrIso instanceof Date ? instantOrIso : new Date(instantOrIso);
+    return d.getUTCFullYear() + '-' +
+      String(d.getUTCMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getUTCDate()).padStart(2, '0') + ' ' +
+      String(d.getUTCHours()).padStart(2, '0') + ':' +
+      String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+  };
+
   const jwtRotateNow = () => {
     jwtAdminPost(jwtContextPath + '/admin/jwtKeyRotate.html', '',
       data => {
-        const rotated = data.status === 'rotated';
-        jwtShowResult('jwtRotateResult', rotated ? 'ok' : 'error', rotated ? 'Keys rotated successfully' : (data.message || 'Rotation failed'));
-        if (rotated && data.warning) {
-          jwtShowResult('jwtRotateWarning', 'warn', data.warning);
-        } else {
-          document.getElementById('jwtRotateWarning').style.display = 'none';
-        }
-        if (rotated) {
-          const now = new Date();
-          const formatted = now.getUTCFullYear() + '-' +
-            String(now.getUTCMonth() + 1).padStart(2, '0') + '-' +
-            String(now.getUTCDate()).padStart(2, '0') + ' ' +
-            String(now.getUTCHours()).padStart(2, '0') + ':' +
-            String(now.getUTCMinutes()).padStart(2, '0') + ' UTC';
-          document.getElementById('jwtLastRotatedDate').textContent = formatted;
+        if (data.status === 'rotated') {
+          const activeAtFmt = data.activeAt ? jwtFormatUtcMinute(data.activeAt) : null;
+          const msg = activeAtFmt
+            ? 'Rotation started - new key will become active at ' + activeAtFmt
+            : 'Keys rotated successfully';
+          jwtShowResult('jwtRotateResult', 'ok', msg);
+          if (data.warning) {
+            jwtShowResult('jwtRotateWarning', 'warn', data.warning);
+          } else {
+            document.getElementById('jwtRotateWarning').style.display = 'none';
+          }
+          document.getElementById('jwtLastRotatedDate').textContent = jwtFormatUtcMinute(new Date());
+          document.getElementById('jwtWarmupAnnotation').textContent = activeAtFmt
+            ? ' (warming up - new key active at ' + activeAtFmt + ')'
+            : '';
           jwtRefreshKeyTable();
+        } else if (data.status === 'warmupInProgress') {
+          // 409 path: a previous rotation's warmup is still in progress. Show the
+          // structured message (which names the activation time) as a warning, not
+          // a hard error — the rotation is recoverable by waiting.
+          jwtShowResult('jwtRotateResult', 'warn', data.message);
+          document.getElementById('jwtRotateWarning').style.display = 'none';
+        } else {
+          jwtShowResult('jwtRotateResult', 'error', data.message || 'Rotation failed');
+          document.getElementById('jwtRotateWarning').style.display = 'none';
         }
       },
       () => jwtShowResult('jwtRotateResult', 'error', 'Request failed')

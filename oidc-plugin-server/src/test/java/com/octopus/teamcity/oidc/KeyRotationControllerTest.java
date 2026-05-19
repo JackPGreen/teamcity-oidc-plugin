@@ -18,6 +18,7 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.File;
 import java.io.PrintWriter;
 import java.io.StringWriter;
+import java.time.Instant;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.*;
@@ -46,12 +47,14 @@ public class KeyRotationControllerTest {
     }
 
     private KeyRotationController controller() {
-        return new KeyRotationController(controllerManager, keyManager, settingsManager, csrfFilter);
+        return new KeyRotationController(controllerManager, keyManager, settingsManager,
+                keyManager.getOidcSettingsManager(), csrfFilter);
     }
 
     @Test
     public void registersAtAdminPath() {
-        new KeyRotationController(controllerManager, keyManager, settingsManager, csrfFilter);
+        new KeyRotationController(controllerManager, keyManager, settingsManager,
+                keyManager.getOidcSettingsManager(), csrfFilter);
         verify(controllerManager).registerController(eq(KeyRotationController.PATH), any(KeyRotationController.class));
     }
 
@@ -71,8 +74,14 @@ public class KeyRotationControllerTest {
             controller().doHandle(request, response);
         }
 
-        assertThat(keyManager.getRsaKey().getKeyID()).isNotEqualTo(originalRsaKid);
-        assertThat(keyManager.getEcKey().getKeyID()).isNotEqualTo(originalEcKid);
+        // Rotation now creates pending keys (warmup-delayed activation); current is unchanged.
+        // Verify the pending slots were created with different kids, and the response says "rotated".
+        assertThat(keyManager.getRsaKey().getKeyID()).isEqualTo(originalRsaKid);
+        assertThat(keyManager.getEcKey().getKeyID()).isEqualTo(originalEcKid);
+        assertThat(keyManager.getRsaPendingSlot()).isNotNull();
+        assertThat(keyManager.getRsaPendingSlot().jwk().getKeyID()).isNotEqualTo(originalRsaKid);
+        assertThat(keyManager.getEcPendingSlot()).isNotNull();
+        assertThat(keyManager.getEcPendingSlot().jwk().getKeyID()).isNotEqualTo(originalEcKid);
         assertThat(writer.toString()).contains("rotated");
     }
 
@@ -120,9 +129,11 @@ public class KeyRotationControllerTest {
 
     @Test
     public void noWarningWhenRotatingAfterMinGap() throws Exception {
-        // Simulate a previous rotation well outside the minimum gap
+        // Simulate a previous rotation well outside the minimum gap.
+        // Default settings: 10 min cache × 60 × 2 = 1200s gap.
+        final var defaultMinGapSeconds = OidcSettings.DEFAULT_JWKS_CACHE_LIFETIME_MINUTES * 60L * 2L;
         settingsManager.updateLastRotatedAt(
-                java.time.Instant.now().minusSeconds(KeyRotationController.MIN_ROTATION_GAP_SECONDS + 60));
+                java.time.Instant.now().minusSeconds(defaultMinGapSeconds + 60));
 
         final var writer = new StringWriter();
         when(request.getMethod()).thenReturn("POST");
@@ -196,5 +207,59 @@ public class KeyRotationControllerTest {
         }
 
         verify(response).setStatus(HttpServletResponse.SC_FORBIDDEN);
+    }
+
+    @Test
+    public void returnsConflictWhenWarmupInProgress() throws Exception {
+        // First rotation creates pending state; second call throws PendingRotationInProgressException.
+        final var adminUser = mock(SUser.class);
+        when(adminUser.isPermissionGrantedGlobally(Permission.CHANGE_SERVER_SETTINGS)).thenReturn(true);
+        when(request.getMethod()).thenReturn("POST");
+
+        final var firstWriter = new StringWriter();
+        lenient().when(response.getWriter()).thenReturn(new PrintWriter(firstWriter));
+
+        // First rotation — succeeds, leaves pending state.
+        try (final var sessionUser = mockStatic(SessionUser.class)) {
+            sessionUser.when(() -> SessionUser.getUser(request)).thenReturn(adminUser);
+            controller().doHandle(request, response);
+        }
+
+        // Second rotation — pending still in warmup window, should return 409.
+        final var secondWriter = new StringWriter();
+        when(response.getWriter()).thenReturn(new PrintWriter(secondWriter));
+
+        try (final var sessionUser = mockStatic(SessionUser.class)) {
+            sessionUser.when(() -> SessionUser.getUser(request)).thenReturn(adminUser);
+            controller().doHandle(request, response);
+        }
+
+        verify(response).setStatus(HttpServletResponse.SC_CONFLICT);
+        assertThat(secondWriter.toString())
+                .contains("warmupInProgress");
+    }
+
+    @Test
+    public void successResponseIncludesActivationTime() throws Exception {
+        final var writer = new StringWriter();
+        when(request.getMethod()).thenReturn("POST");
+        when(response.getWriter()).thenReturn(new PrintWriter(writer));
+
+        final var adminUser = mock(SUser.class);
+        when(adminUser.isPermissionGrantedGlobally(Permission.CHANGE_SERVER_SETTINGS)).thenReturn(true);
+
+        final var before = Instant.now();
+        try (final var sessionUser = mockStatic(SessionUser.class)) {
+            sessionUser.when(() -> SessionUser.getUser(request)).thenReturn(adminUser);
+            controller().doHandle(request, response);
+        }
+
+        // After a successful rotation, the pending activateAt should be in the response body.
+        assertThat(writer.toString()).contains("rotated");
+        assertThat(writer.toString()).contains("activeAt");
+        // The activateAt is in the future (activateAt = now + jwksCacheLifetimeMinutes).
+        final var pendingActivateAt = keyManager.getPendingActivateAt();
+        assertThat(pendingActivateAt).isNotNull();
+        assertThat(pendingActivateAt).isAfter(before);
     }
 }
