@@ -47,7 +47,7 @@ public record IssuanceSettings(@NotNull String audience,
             return Math.clamp(Integer.parseInt(raw),
                     OidcSettings.MIN_TOKEN_LIFETIME_MINUTES, maxTtlMinutes);
         } catch (final NumberFormatException e) {
-            LOG.warning("JWT plugin: invalid ttl_minutes '" + raw + "' — using default "
+            LOG.warning("JWT plugin: invalid ttl_minutes '" + sanitize(raw) + "' — using default "
                     + DEFAULT_TTL_MINUTES + " (clamped to server max " + maxTtlMinutes + ")");
             return Math.min(DEFAULT_TTL_MINUTES, maxTtlMinutes);
         }
@@ -55,9 +55,22 @@ public record IssuanceSettings(@NotNull String audience,
 
     private static Set<String> parseSubjectDimensions(final String raw) {
         if (raw.isBlank()) return Set.of();
-        return Arrays.stream(SUBJECT_DIMENSIONS_SPLIT.split(raw))
+        final var requested = Arrays.stream(SUBJECT_DIMENSIONS_SPLIT.split(raw))
                 .filter(s -> !s.isBlank())
+                .collect(Collectors.toUnmodifiableSet());
+        final var unknown = requested.stream()
+                .filter(s -> !JwtBuildFeature.ALL_OPTIONAL_SUBJECT_DIMENSIONS.contains(s))
+                .map(IssuanceSettings::sanitize)
+                .collect(Collectors.toUnmodifiableSet());
+        if (!unknown.isEmpty()) {
+            LOG.warning("JWT plugin: ignoring unrecognised subject dimensions: " + unknown);
+        }
+        return requested.stream()
                 .filter(JwtBuildFeature.ALL_OPTIONAL_SUBJECT_DIMENSIONS::contains)
                 .collect(Collectors.toUnmodifiableSet());
+    }
+
+    private static String sanitize(final String s) {
+        return s == null ? "" : s.replaceAll("[\\r\\n\\t]", "_");
     }
 }

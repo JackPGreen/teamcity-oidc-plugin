@@ -2,8 +2,13 @@ package com.octopus.teamcity.oidc;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Handler;
+import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -71,5 +76,27 @@ public class IssuanceSettingsTest {
                 Map.of("subject_dimensions", "branch,bogus,trigger_type"),
                 "https://issuer", 720);
         assertThat(settings.subjectDimensions()).containsExactlyInAnyOrder("branch", "trigger_type");
+    }
+
+    @Test
+    public void unknownSubjectDimensionsProduceWarning() {
+        final var logger = Logger.getLogger(IssuanceSettings.class.getName());
+        final List<LogRecord> captured = new ArrayList<>();
+        final var handler = new Handler() {
+            @Override public void publish(final LogRecord r) { captured.add(r); }
+            @Override public void flush() {}
+            @Override public void close() {}
+        };
+        logger.addHandler(handler);
+        try {
+            IssuanceSettings.fromBuildFeatureParams(
+                    Map.of("subject_dimensions", "branch,bogus"),
+                    "https://issuer", 720);
+        } finally {
+            logger.removeHandler(handler);
+        }
+        assertThat(captured)
+                .anyMatch(r -> r.getMessage().contains("unrecognised subject dimensions")
+                        && r.getMessage().contains("bogus"));
     }
 }
