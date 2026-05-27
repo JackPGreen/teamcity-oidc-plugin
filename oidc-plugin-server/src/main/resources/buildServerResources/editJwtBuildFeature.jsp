@@ -35,6 +35,49 @@
             <td colspan="2"><span class="error" id="error_root_url">The TeamCity server root URL must use HTTPS for OIDC token issuance. Update it in Administration &#x2192; Global Settings.</span></td>
         </tr>
     </c:if>
+    <%
+        final java.util.List<com.octopus.teamcity.oidc.OidcConnection> jwtConnections =
+                com.octopus.teamcity.oidc.JwtBuildFeature.availableConnectionsFor(request.getParameter("id"));
+        pageContext.setAttribute("jwtConnections", jwtConnections);
+    %>
+    <tr id="row_connection_id">
+        <th><label for="connection_id">Connection:</label></th>
+        <td>
+            <props:selectProperty name="connection_id" id="connection_id">
+                <props:option value="">(no connection — configure inline below)</props:option>
+                <c:forEach var="c" items="${jwtConnections}">
+                    <props:option value="${fn:escapeXml(c.id())}"
+                                  selected="${propertiesBean.properties['connection_id'] == c.id()}">
+                        <c:out value="${c.displayName()}"/>
+                    </props:option>
+                </c:forEach>
+            </props:selectProperty>
+            <span class="smallNote">Optionally reference a Project Connection of type "OIDC Identity Token" (defined under Project Admin → Connections).</span>
+            <span class="error" id="error_connection_id"></span>
+        </td>
+    </tr>
+
+    <%-- Read-only summary of the selected connection's settings (hidden when no connection picked) --%>
+    <tr id="row_connection_summary" style="display:none;">
+        <th>Connection settings:</th>
+        <td>
+            <ul class="jwt-conn-summary smallNote" id="jwt_conn_summary"></ul>
+        </td>
+    </tr>
+
+    <%-- Connection metadata for JS — emitted as data-* attributes to avoid inline script injection --%>
+    <div id="jwtConnectionsData" style="display:none;">
+        <c:forEach var="c" items="${jwtConnections}">
+            <span class="jwt-connection-entry"
+                  data-id="${fn:escapeXml(c.id())}"
+                  data-display-name="${fn:escapeXml(c.displayName())}"
+                  data-audience="${fn:escapeXml(c.settings().audience())}"
+                  data-ttl="${c.settings().ttlMinutes()}"
+                  data-algorithm="${fn:escapeXml(c.settings().signingAlgorithm())}"
+                  data-subject-dimensions="${fn:escapeXml(c.settings().subjectDimensions().toString())}"></span>
+        </c:forEach>
+    </div>
+
     <tr>
         <th><label for="ttl_minutes">Token lifetime (minutes):</label></th>
         <td>
@@ -284,5 +327,45 @@
         });
 
         updatePreview();
+
+        // Connection dropdown handler: hide inline rows and show summary when a connection is picked.
+        const connectionToggleRows = [
+            'tr:has(input[name="prop:ttl_minutes"])',
+            'tr:has(input[name="prop:audience"])',
+            'tr:has(select[name="prop:algorithm"])',
+            'tr:has(input[name="prop:subject_dimensions"])'
+        ];
+
+        const connectionData = {};
+        $j('#jwtConnectionsData .jwt-connection-entry').each((_, el) => {
+            const $e = $j(el);
+            connectionData[$e.attr('data-id')] = {
+                displayName: $e.attr('data-display-name'),
+                audience: $e.attr('data-audience'),
+                ttl: $e.attr('data-ttl'),
+                algorithm: $e.attr('data-algorithm'),
+                subjectDimensions: $e.attr('data-subject-dimensions')
+            };
+        });
+
+        const refreshConnectionUI = () => {
+            const selected = $j('#connection_id').val();
+            if (selected && connectionData[selected]) {
+                connectionToggleRows.forEach(sel => $j(sel).hide());
+                const c = connectionData[selected];
+                $j('#jwt_conn_summary').empty()
+                    .append('<li><strong>aud:</strong> ' + $j('<div/>').text(c.audience || '(issuer URL)').html() + '</li>')
+                    .append('<li><strong>ttl:</strong> ' + $j('<div/>').text(c.ttl + ' minutes').html() + '</li>')
+                    .append('<li><strong>alg:</strong> ' + $j('<div/>').text(c.algorithm).html() + '</li>')
+                    .append('<li><strong>subject dims:</strong> ' + $j('<div/>').text(c.subjectDimensions || '(none)').html() + '</li>');
+                $j('#row_connection_summary').show();
+            } else {
+                connectionToggleRows.forEach(sel => $j(sel).show());
+                $j('#row_connection_summary').hide();
+            }
+        };
+
+        $j('#connection_id').on('change', refreshConnectionUI);
+        refreshConnectionUI();
     });
 </script>
