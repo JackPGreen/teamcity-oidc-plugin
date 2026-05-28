@@ -19,7 +19,6 @@ import javax.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.Date;
 import java.util.List;
-import java.util.Set;
 import java.util.UUID;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -32,7 +31,6 @@ import java.util.logging.Logger;
 public class OidcConnectionTestController extends BaseController {
     private static final Logger LOG = Logger.getLogger(OidcConnectionTestController.class.getName());
     static final String PATH = "/admin/oidcConnectionTest.html";
-    private static final Set<String> ALLOWED_ALGORITHMS = Set.of("RS256", "RS384", "ES256");
 
     private final JwtKeyManager keyManager;
     private final SBuildServer buildServer;
@@ -86,8 +84,8 @@ public class OidcConnectionTestController extends BaseController {
         response.setContentType("application/json;charset=UTF-8");
         try {
             final var algorithm = request.getParameter("algorithm");
-            if (algorithm == null || !ALLOWED_ALGORITHMS.contains(algorithm)) {
-                writeJson(response, false, "Unsupported algorithm — must be one of: " + String.join(", ", ALLOWED_ALGORITHMS));
+            if (algorithm == null || !OidcConnectionProvider.ALLOWED_ALGORITHMS.contains(algorithm)) {
+                writeJson(response, false, "Unsupported algorithm — must be one of: " + String.join(", ", OidcConnectionProvider.ALLOWED_ALGORITHMS));
                 return;
             }
             final var rootUrl = issuerUrlProvider.getIssuerUrl();

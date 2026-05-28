@@ -13,6 +13,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.io.File;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -45,6 +46,7 @@ public class JwtBuildFeatureTest {
         final var buildServer = buildServerWithRootUrl("https://teamcity.example.com");
         lenient().when(buildServer.getProjectManager()).thenReturn(projectManager);
         lenient().when(projectManager.getRootProject()).thenReturn(rootProject);
+        lenient().when(projectManager.getProjects()).thenReturn(List.of(rootProject));
         feature = new JwtBuildFeature(pluginDescriptor, buildServer,
                 providerFor("https://teamcity.example.com"), new OidcSettingsManager(tempDir),
                 oidcConnectionsManager);
@@ -216,7 +218,7 @@ public class JwtBuildFeatureTest {
     public void describeParametersIncludesAllConfiguredDimensions() {
         final var feature = newFeature("https://teamcity.example.com");
         final var description = feature.describeParameters(Map.of("subject_dimensions", "branch,trigger_type"));
-        assertThat(description).isEqualTo("sub:project:<project_id>:build_type:<build_type_id>:branch:<branch>:trigger_type:<trigger>");
+        assertThat(description).isEqualTo("sub:project:<project_id>:build_type:<build_type_id>:branch:<branch>:trigger_type:<trigger_type>");
     }
 
     @Test

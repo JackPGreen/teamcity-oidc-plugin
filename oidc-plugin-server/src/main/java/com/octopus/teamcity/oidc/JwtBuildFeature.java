@@ -8,6 +8,7 @@ import org.jetbrains.annotations.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -138,8 +139,7 @@ public class JwtBuildFeature extends BuildFeature {
     public String describeParameters(@NotNull final java.util.Map<String, String> params) {
         final var connectionId = params.getOrDefault("connection_id", "").trim();
         if (!connectionId.isEmpty() && staticOidcConnectionsManager != null && staticBuildServer != null) {
-            final var rootProject = staticBuildServer.getProjectManager().getRootProject();
-            final var resolved = staticOidcConnectionsManager.resolve(rootProject, connectionId);
+            final var resolved = resolveConnectionFromAnyProject(connectionId);
             if (resolved.isPresent()) {
                 final var conn = resolved.get();
                 final var sb = new StringBuilder("connection: ").append(conn.displayName());
@@ -164,6 +164,23 @@ public class JwtBuildFeature extends BuildFeature {
         return sb.toString();
     }
 
+    /**
+     * Walks all projects to find which one owns {@code connectionId}, then resolves the
+     * connection from there. Starting from root would only find connections defined
+     * directly at root; TC's {@code findConnectionById} walks upward from the given project,
+     * so we must start from the project that actually owns the connection.
+     */
+    private static Optional<OidcConnection> resolveConnectionFromAnyProject(final String connectionId) {
+        final var manager = staticOidcConnectionsManager;
+        final var server = staticBuildServer;
+        if (manager == null || server == null) return Optional.empty();
+        for (final var project : server.getProjectManager().getProjects()) {
+            final var resolved = manager.resolve(project, connectionId);
+            if (resolved.isPresent()) return resolved;
+        }
+        return Optional.empty();
+    }
+
     private static String subjectTemplate(@Nullable final String subjectDimensionsParam) {
         final var raw = subjectDimensionsParam == null ? "" : subjectDimensionsParam.trim();
         final boolean includeBranch;
@@ -177,7 +194,7 @@ public class JwtBuildFeature extends BuildFeature {
         }
         final var sb = new StringBuilder("project:<project_id>:build_type:<build_type_id>");
         if (includeBranch) sb.append(":branch:<branch>");
-        if (includeTriggerType) sb.append(":trigger_type:<trigger>");
+        if (includeTriggerType) sb.append(":trigger_type:<trigger_type>");
         return sb.toString();
     }
 
