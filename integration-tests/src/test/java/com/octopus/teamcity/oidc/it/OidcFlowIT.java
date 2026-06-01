@@ -1,57 +1,30 @@
 package com.octopus.teamcity.oidc.it;
 
-import com.github.dockerjava.api.model.ExposedPort;
-import com.github.dockerjava.api.model.PortBinding;
-import com.github.dockerjava.api.model.Ports;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.testcontainers.containers.GenericContainer;
-import org.testcontainers.containers.Network;
-import org.testcontainers.containers.wait.strategy.Wait;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
-import org.testcontainers.utility.MountableFile;
 
 import net.minidev.json.JSONArray;
-import net.minidev.json.JSONObject;
-import net.minidev.json.parser.JSONParser;
 
 import java.net.http.HttpClient;
 import java.nio.file.Files;
-import java.nio.file.Path;
-import java.security.KeyStore;
 import java.time.Duration;
 import java.util.Base64;
 
-
-@Testcontainers
+/**
+ * End-to-end OIDC flow against the shared stack: triggers a real build, reads the issued JWT back
+ * from an artifact, and exchanges it with Octopus. The containers and one-time bring-up live in
+ * {@link SharedStack}; this class owns the OIDC-flow-specific server configuration (root URL,
+ * Octopus service account + identity, agent authorization, project/build creation).
+ */
 public class OidcFlowIT {
 
-    private static final int TC_PORT = 8111;
-    /**
-     * Fixed host port used for the TeamCity container in manual mode (-Dmanual). Stable across
-     * restarts so the browser URL doesn't change between container restarts. CI runs use the
-     * auto-allocated port to avoid clashes between parallel test invocations.
-     */
-    private static final int MANUAL_TC_HOST_PORT = 18111;
-    private static final boolean MANUAL_MODE = System.getProperty("manual") != null;
-    private static final String TC_IMAGE = "jetbrains/teamcity-server:2025.11";
-    private static final String AGENT_IMAGE = "jetbrains/teamcity-agent:2025.11";
-    private static final String OCTOPUS_IMAGE = "octopusdeploy/octopusdeploy:2025.4";
-    private static final String CADDY_IMAGE = "caddy:2";
-    private static final String MSSQL_IMAGE = "mcr.microsoft.com/mssql/server:2022-latest";
-
-    private static final String OCTOPUS_ADMIN_API_KEY = generateApiKey();
-
-    private static final String OCTOPUS_ADMIN_PASSWORD = "P@ssw0rd123!";
-    private static final String MSSQL_PASSWORD = "P@ssw0rd123!";
-
-    private static final String TC_INTERNAL_ALIAS = "teamcity";
-    private static final String CADDY_ALIAS = "teamcity-tls";
-    private static final String TC_ALT_ALIAS = "teamcity-public-tls";
-    private static final String OCTOPUS_CADDY_ALIAS = "octopus-tls";
-    private static final String TC_HTTPS_BASE = "https://teamcity-tls";
+    // Aliases to the shared stack so the test bodies below read unchanged.
+    private static final int TC_PORT = SharedStack.TC_PORT;
+    private static final String TC_HTTPS_BASE = SharedStack.TC_HTTPS_BASE;
+    private static final String OCTOPUS_ADMIN_API_KEY = SharedStack.octopusApiKey();
+    private static final String CONTAINER_PREFIX = SharedStack.CONTAINER_PREFIX;
 
     private static final String BUILD_CONFIG_EXTERNAL_ID = "OidcTest_Build";
     private static final String PROJECT_EXTERNAL_ID = "OidcTest";
@@ -60,203 +33,16 @@ public class OidcFlowIT {
     static String projectInternalId; // fetched after project creation, used in Octopus OIDC subject
     static String buildTypeInternalId; // fetched after build type creation, used in Octopus OIDC subject
 
-    private static final String CONTAINER_PREFIX = "jwt-it-"
-            + java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
-
-    private static final Path PLUGIN_ZIP = requirePluginZip();
-
-    private static String generateApiKey() {
-        final var rng = new java.security.SecureRandom();
-        final var sb = new StringBuilder("API-FAKEKEY");
-        for (var i = 0; i < 21; i++) sb.append(rng.nextInt(10));
-        return sb.toString();
-    }
-
-    private static Path requirePluginZip() {
-        final var targetDir = Path.of(
-                System.getProperty("project.basedir", "."),
-                "../target/"
-        ).normalize();
-        try (final var stream = java.nio.file.Files.list(targetDir)) {
-            return stream
-                    .filter(p -> p.getFileName().toString().matches("Octopus\\.TeamCity\\.OIDC\\..*\\.zip"))
-                    .findFirst()
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Plugin zip not found in: " + targetDir.toAbsolutePath() +
-                            "\nRun 'mvn package -DskipTests' from the project root first."));
-        } catch (final java.io.IOException e) {
-            throw new IllegalStateException("Could not list target directory: " + targetDir.toAbsolutePath(), e);
-        }
-    }
-
-    /** Generated at test startup — CA and server cert/key for the Caddy TLS proxy. */
-    private static final TlsCertificateGenerator.Result TLS;
-    /**
-     * The TC container's JVM cacerts with the test CA cert added, so that
-     * JwtTestController's HttpClient can reach Caddy over HTTPS without
-     * an SSLHandshakeException. Built on the host (where we have write access)
-     * and bind-mounted read-only into the container at startup.
-     */
-    private static final Path TC_CACERTS_WITH_TEST_CA;
-    static {
-        try {
-            // All three aliases are always included as SANs: the Caddy container always
-            // gets all three network aliases (CADDY_ALIAS, TC_ALT_ALIAS, OCTOPUS_CADDY_ALIAS)
-            // regardless of environment. TESTCONTAINERS_HOST_OVERRIDE adds an extra SAN
-            // so TLS verification also succeeds via the mapped port host in DinD.
-            final var tcHostOverride = System.getenv("TESTCONTAINERS_HOST_OVERRIDE");
-            TLS = (tcHostOverride != null && !tcHostOverride.isBlank())
-                    ? TlsCertificateGenerator.generate(CADDY_ALIAS, TC_ALT_ALIAS, OCTOPUS_CADDY_ALIAS, "localhost", tcHostOverride)
-                    : TlsCertificateGenerator.generate(CADDY_ALIAS, TC_ALT_ALIAS, OCTOPUS_CADDY_ALIAS, "localhost");
-            TC_CACERTS_WITH_TEST_CA = buildCacertsWithTestCa(TLS.caCert());
-        } catch (final Exception e) {
-            throw new RuntimeException("Failed to prepare TC runtime files", e);
-        }
-    }
-
-    /** Copies the host JVM's cacerts and adds the test CA so TC can talk to Caddy. */
-    private static Path buildCacertsWithTestCa(final java.security.cert.Certificate caCert) throws Exception {
-        final var javaHome = System.getProperty("java.home");
-        final var hostCacerts = Path.of(javaHome, "lib", "security", "cacerts");
-
-        final var ks = KeyStore.getInstance("JKS");
-        final var pass = "changeit".toCharArray();
-        if (Files.exists(hostCacerts)) {
-            try (final var in = Files.newInputStream(hostCacerts)) {
-                ks.load(in, pass);
-            }
-        } else {
-            ks.load(null, pass);
-        }
-
-        ks.setCertificateEntry("test-ca", caCert);
-
-        final var tmp = Files.createTempFile("tc-cacerts-", ".jks");
-        try (final var out = Files.newOutputStream(tmp)) {
-            ks.store(out, pass);
-        }
-        return tmp;
-    }
-
-    static final Network network = Network.newNetwork();
-
-    @Container
-    static final GenericContainer<?> mssql = new GenericContainer<>(MSSQL_IMAGE)
-            .withNetwork(network)
-            .withNetworkAliases("mssql")
-            .withExposedPorts(1433)
-            .withEnv("ACCEPT_EULA", "Y")
-            .withEnv("MSSQL_SA_PASSWORD", MSSQL_PASSWORD)
-            .withCreateContainerCmdModifier(cmd -> cmd.withName(CONTAINER_PREFIX + "-mssql"))
-            // Wait for SQL Server to be fully initialized and accepting connections,
-            // not just the TCP port being open — Octopus will crash if it connects too early
-            .waitingFor(Wait.forLogMessage(".*SQL Server is now ready for client connections.*\\n", 1)
-                    .withStartupTimeout(Duration.ofMinutes(3)));
-
-    // ADO.NET connection string using the Docker network alias for MSSQL
-    private static final String OCTOPUS_DB_CONNECTION_STRING =
-            "Server=mssql,1433;Database=Octopus;User Id=sa;Password=" + MSSQL_PASSWORD + ";TrustServerCertificate=true";
-
-    @Container
-    static final GenericContainer<?> octopus = new GenericContainer<>(OCTOPUS_IMAGE)
-            .withNetwork(network)
-            .withNetworkAliases("octopus")
-            .withExposedPorts(8080)
-            .withEnv("ACCEPT_EULA", "Y")
-            .withEnv("DB_CONNECTION_STRING", OCTOPUS_DB_CONNECTION_STRING)
-            .withEnv("ADMIN_USERNAME", "admin")
-            .withEnv("ADMIN_PASSWORD", OCTOPUS_ADMIN_PASSWORD)
-            .withEnv("ADMIN_API_KEY", OCTOPUS_ADMIN_API_KEY)
-            .withEnv("DISABLE_DIND", "Y")
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(TLS.caCertPem().toString()),
-                    "/usr/local/share/ca-certificates/test-ca.crt"
-            )
-            .withCreateContainerCmdModifier(cmd -> cmd.withName(CONTAINER_PREFIX + "-octopus"))
-            .dependsOn(mssql)
-            .waitingFor(Wait.forHttp("/api").forStatusCode(200).withStartupTimeout(Duration.ofMinutes(10)));
-
-    @Container
-    static final GenericContainer<?> teamcity = new GenericContainer<>(TC_IMAGE)
-            .withNetwork(network)
-            .withNetworkAliases(TC_INTERNAL_ALIAS)
-            .withExposedPorts(TC_PORT)
-            .withEnv("TEAMCITY_SERVER_OPTS", "-Dteamcity.startup.maintenance=false"
-                    // octopus-tls resolves to a Docker-internal (site-local) IP — bypass the
-                    // private-address SSRF check so Try Exchange can reach it in this test env.
-                    + " -Dteamcity.oidc.allowPrivateExchangeUrls=true")
-            // Copy the plugin zip via the Docker API so it works with a remote (DinD) daemon.
-            // withFileSystemBind would fail because the DinD daemon can't see paths inside
-            // the Maven container's /tmp.
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(PLUGIN_ZIP.toString()),
-                    "/data/teamcity_server/datadir/plugins/" + PLUGIN_ZIP.getFileName())
-            // Replace the JVM truststore with one that includes our test CA, so that
-            // JwtTestController's HttpClient can reach Caddy over HTTPS.
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(TC_CACERTS_WITH_TEST_CA.toString()),
-                    "/opt/java/openjdk/lib/security/cacerts")
-            .withCreateContainerCmdModifier(cmd -> {
-                cmd.withName(CONTAINER_PREFIX + "-teamcity");
-                // Docker's withCopyFileToContainer creates the plugins/ directory as root:root,
-                // which prevents tcuser from creating subdirectories (.tools, .bundledTools).
-                // Fix: start as root, chown the directory, then exec TC as tcuser.
-                cmd.withUser("root");
-                cmd.withCmd("/bin/sh", "-c",
-                        // Make the custom cacerts world-readable (withCopyFileToContainer
-                        // copies with the host file's mode; if it's 0600 the tcuser JVM
-                        // can't read it, causing SSLContext to initialize with no trust
-                        // anchors and all outbound TLS connections to fail).
-                        "chmod 644 /opt/java/openjdk/lib/security/cacerts" +
-                        " && chown -R tcuser:tcuser /data/teamcity_server/datadir/plugins" +
-                        " && exec runuser -u tcuser -- /run-services.sh");
-                // In manual mode, pin the TC host port so the browser URL is stable across
-                // container restarts. CI keeps the testcontainers auto-allocated port.
-                if (MANUAL_MODE) {
-                    cmd.getHostConfig().withPortBindings(new PortBinding(
-                            Ports.Binding.bindPort(MANUAL_TC_HOST_PORT),
-                            new ExposedPort(TC_PORT)));
-                }
-            })
-            .waitingFor(
-                    Wait.forHttp("/mnt/").forStatusCode(200).withStartupTimeout(Duration.ofMinutes(5))
-            );
-
-    @Container
-    static final GenericContainer<?> caddy = new GenericContainer<>(CADDY_IMAGE)
-            .withNetwork(network)
-            .withNetworkAliases(CADDY_ALIAS, TC_ALT_ALIAS, OCTOPUS_CADDY_ALIAS)
-            .withExposedPorts(443, 8443)
-            .withCopyFileToContainer(
-                    MountableFile.forClasspathResource("Caddyfile"),
-                    "/etc/caddy/Caddyfile"
-            )
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(TLS.serverCertPem().toString()),
-                    "/etc/caddy/tls/server.crt"
-            )
-            .withCopyFileToContainer(
-                    MountableFile.forHostPath(TLS.serverKeyPem().toString()),
-                    "/etc/caddy/tls/server.key"
-            )
-            .withCreateContainerCmdModifier(cmd -> cmd.withName(CONTAINER_PREFIX + "-caddy"))
-            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(1)));
-
-    @Container
-    static final GenericContainer<?> agent = new GenericContainer<>(AGENT_IMAGE)
-            .withNetwork(network)
-            // Connect directly to TC over plain HTTP — the agent doesn't need to go through
-            // Caddy and would fail TLS verification anyway (self-signed cert, no custom truststore).
-            // The JWT iss claim comes from TC's configured root URL (https://teamcity-tls), not
-            // from how the agent connects.
-            .withEnv("SERVER_URL", "http://" + TC_INTERNAL_ALIAS + ":" + TC_PORT)
-            .withCreateContainerCmdModifier(cmd -> cmd.withName(CONTAINER_PREFIX + "-agent"))
-            .dependsOn(teamcity);
-
+    // Shared-stack handles, wired in setup().
+    private static TeamCityClient tc;
+    private static GenericContainer<?> teamcity;
+    private static GenericContainer<?> octopus;
+    private static GenericContainer<?> caddy;
+    private static GenericContainer<?> agent;
     static String tcBaseUrl;       // http://localhost:<mapped TC port> — for test→TC calls
     static String octopusBaseUrl;  // http://localhost:<mapped Octopus port> — for test→Octopus calls
     static String superUserAuthHeader;
-    static HttpClient tcHttp;      // talks to TC (plain HTTP from test host)
+    static HttpClient tcHttp;      // TLS-trusting client (trusts the test CA); also fine for plain HTTP
     static HttpClient octopusHttp; // talks to Octopus (plain HTTP from test host)
 
     static void log(final String msg) {
@@ -265,35 +51,23 @@ public class OidcFlowIT {
 
     @BeforeAll
     static void setup() throws Exception {
-        tcBaseUrl = "http://" + teamcity.getHost() + ":" + teamcity.getMappedPort(TC_PORT);
-        octopusBaseUrl = "http://" + octopus.getHost() + ":" + octopus.getMappedPort(8080);
-        log("Containers up. TC=" + tcBaseUrl + " Octopus=" + octopusBaseUrl);
+        SharedStack.ensureStarted();
+        tc = SharedStack.teamCity();
+        teamcity = SharedStack.teamcity();
+        octopus = SharedStack.octopus();
+        caddy = SharedStack.caddy();
+        agent = SharedStack.agent();
+        tcBaseUrl = SharedStack.tcBaseUrl();
+        octopusBaseUrl = SharedStack.octopusBaseUrl();
+        tcHttp = SharedStack.caddyTlsHttp();
+        octopusHttp = SharedStack.octopusHttp();
+        superUserAuthHeader = tc.authHeader();
 
-        final var ssl = TlsTrustManager.buildSslContext(TLS.caCert());
-        tcHttp = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .connectTimeout(Duration.ofSeconds(10))
-                .sslContext(ssl)
-                .build();
-        octopusHttp = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NEVER)
-                .connectTimeout(Duration.ofSeconds(10))
-                .build();
+        log("Stack up. TC=" + tcBaseUrl + " Octopus=" + octopusBaseUrl);
+        log("TC super user token: " + tc.superUserToken() + "  (login at " + tcBaseUrl + " with empty username)");
 
-        log("Accepting TC license agreement...");
-        acceptTcLicenseAgreementIfRequired();
-        log("Waiting for TC to be ready...");
-        waitForTcReady();
-
-        log("Extracting TC super user token...");
-        final var token = extractTcSuperUserTokenWithRetry();
-        final var encoded = java.util.Base64.getEncoder().encodeToString((":" + token).getBytes());
-        superUserAuthHeader = "Basic " + encoded;
-
-        log("TC super user token: " + token + "  (login at " + tcBaseUrl + " with empty username)");
         log("Configuring TC root URL to " + TC_HTTPS_BASE + "...");
-        configureTcServerRootUrl();
-        verifyTcRootUrl();
+        tc.setRootUrl(TC_HTTPS_BASE);
 
         log("Creating Octopus service account...");
         octopusExternalId = createOctopusServiceAccount();
@@ -303,7 +77,7 @@ public class OidcFlowIT {
         createTcProjectAndBuildConfig(octopusExternalId);
 
         log("Waiting for TC agent to register...");
-        authorizeAgent();
+        tc.authorizeAgent();
 
         log("Attaching Octopus OIDC identity...");
         attachOctopusOidcIdentity();
@@ -353,119 +127,18 @@ public class OidcFlowIT {
         log("Container logs written to " + logDir);
     }
 
-    private static void acceptTcLicenseAgreementIfRequired() throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(2).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var result = teamcity.execInContainer(
-                    "grep", "-q", "Review and accept TeamCity license agreement",
-                    "/opt/teamcity/logs/teamcity-server.log"
-            );
-            if (result.getExitCode() == 0) break;
-            java.util.concurrent.TimeUnit.SECONDS.sleep(3);
-        }
-        teamcity.execInContainer(
-                "sh", "-c",
-                "curl -sc /tmp/tc-cookies.txt http://localhost:8111/mnt/ > /dev/null && " +
-                "curl -sb /tmp/tc-cookies.txt -X POST " +
-                "http://localhost:8111/mnt/do/acceptLicenseAgreement"
-        );
-    }
-
-    private static void waitForTcReady() throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(5).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var r = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(tcBaseUrl + "/"))
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            if (r.statusCode() == 401 || r.statusCode() == 200) return;
-            java.util.concurrent.TimeUnit.SECONDS.sleep(3);
-        }
-        throw new IllegalStateException("TeamCity did not become ready");
-    }
-
-    private static String extractTcSuperUserTokenWithRetry() throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofSeconds(60).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var result = teamcity.execInContainer(
-                    "grep", "-o", "Super user authentication token: [0-9]*",
-                    "/opt/teamcity/logs/teamcity-server.log"
-            );
-            final var matcher = java.util.regex.Pattern.compile(
-                    "Super user authentication token: (\\d+)"
-            ).matcher(result.getStdout().trim());
-            if (matcher.find()) return matcher.group(1);
-            java.util.concurrent.TimeUnit.SECONDS.sleep(5);
-        }
-        throw new IllegalStateException("TC super user token not found in log after 60s");
-    }
-
-    private static void configureTcServerRootUrl() throws Exception {
-        final var page = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + "/httpAuth/admin/admin.html?item=serverConfigGeneral"))
-                        .header("Authorization", superUserAuthHeader)
-                        .GET().build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        final var csrfMatcher = java.util.regex.Pattern.compile(
-                "tc-csrf-token\" content=\"([^\"]+)\""
-        ).matcher(page.body());
-        if (!csrfMatcher.find()) throw new IllegalStateException("CSRF token not found");
-        final var csrf = csrfMatcher.group(1);
-
-        final var encodedUrl = TC_HTTPS_BASE.replace(":", "%3A").replace("/", "%2F");
-        final var form = "rootUrl=" + encodedUrl + "&submitSettings=store&tc-csrf-token=" + csrf;
-        final var postResponse = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + "/httpAuth/admin/serverConfigGeneral.html"))
-                        .header("Authorization", superUserAuthHeader)
-                        .header("Content-Type", "application/x-www-form-urlencoded")
-                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(form))
-                        .build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        if (postResponse.statusCode() < 200 || postResponse.statusCode() >= 300) {
-            throw new IllegalStateException("TC root URL POST returned " + postResponse.statusCode());
-        }
-    }
-
-    private static void verifyTcRootUrl() throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(1).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var response = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(tcBaseUrl + "/httpAuth/app/rest/server"))
-                            .header("Authorization", superUserAuthHeader)
-                            .header("Accept", "application/json")
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            final var rootUrl = (String) parseJson(response.body()).get("webUrl");
-            if (TC_HTTPS_BASE.equals(rootUrl)) {
-                log("TC root URL confirmed: " + rootUrl);
-                return;
-            }
-            log("TC root URL not yet updated (got: " + rootUrl + "), retrying...");
-            java.util.concurrent.TimeUnit.SECONDS.sleep(3);
-        }
-        throw new IllegalStateException("TC root URL did not update to " + TC_HTTPS_BASE + " within 1 minute");
-    }
-
     private static void createTcProjectAndBuildConfig(final String audience) throws Exception {
         // Create project
         final var projectJson = """
                 {"id":"OidcTest","name":"OidcTest","parentProject":{"id":"_Root"}}
                 """;
-        tcPost("/httpAuth/app/rest/projects", projectJson);
+        tc.post("/httpAuth/app/rest/projects", projectJson);
 
         // Create build config
         final var buildConfigJson = """
                 {"id":"OidcTest_Build","name":"OidcTest Build","project":{"id":"OidcTest"}}
                 """;
-        tcPost("/httpAuth/app/rest/buildTypes", buildConfigJson);
+        tc.post("/httpAuth/app/rest/buildTypes", buildConfigJson);
 
         // Fetch the internal IDs that TC auto-assigns. The Octopus OIDC identity subject
         // is built from these (project:<id>:build_type:<id>) so they need to match the
@@ -474,9 +147,9 @@ public class OidcFlowIT {
         //
         // TC's REST API omits `internalId` from the default response — it must be requested
         // explicitly via `?fields=internalId`.
-        projectInternalId = (String) parseJson(tcGet("/httpAuth/app/rest/projects/" + PROJECT_EXTERNAL_ID + "?fields=internalId"))
+        projectInternalId = (String) Json.parse(tc.get("/httpAuth/app/rest/projects/" + PROJECT_EXTERNAL_ID + "?fields=internalId"))
                 .get("internalId");
-        buildTypeInternalId = (String) parseJson(tcGet("/httpAuth/app/rest/buildTypes/" + BUILD_CONFIG_EXTERNAL_ID + "?fields=internalId"))
+        buildTypeInternalId = (String) Json.parse(tc.get("/httpAuth/app/rest/buildTypes/" + BUILD_CONFIG_EXTERNAL_ID + "?fields=internalId"))
                 .get("internalId");
 
         // Add JWT build feature — audience is the Octopus ExternalId GUID.
@@ -489,7 +162,7 @@ public class OidcFlowIT {
                   {"name":"ttl_minutes","value":"10"}
                 ]}}
                 """.formatted(audience);
-        tcPost("/httpAuth/app/rest/buildTypes/OidcTest_Build/features", featureJson);
+        tc.post("/httpAuth/app/rest/buildTypes/OidcTest_Build/features", featureJson);
 
         // Write jwt.token to a file artifact so we can retrieve it via the artifacts API.
         // jwt.token is masked in the resulting-properties API and in the build log; artifact
@@ -500,17 +173,17 @@ public class OidcFlowIT {
                   {"name":"use.custom.script","value":"true"}
                 ]}}
                 """;
-        tcPost("/httpAuth/app/rest/buildTypes/OidcTest_Build/steps", stepJson);
+        tc.post("/httpAuth/app/rest/buildTypes/OidcTest_Build/steps", stepJson);
 
         // Publish jwt.txt as an artifact so the test can download it via the artifacts API
-        tcPut("/httpAuth/app/rest/buildTypes/OidcTest_Build/settings/artifactRules", "jwt.txt");
+        tc.put("/httpAuth/app/rest/buildTypes/OidcTest_Build/settings/artifactRules", "jwt.txt");
 
         // Map jwt.token onto an env var, mirroring the real-world usage pattern
         // (env.ARM_OIDC_TOKEN=%jwt.token%) that exposed the masking bug.
         final var envVarParamJson = """
                 {"name":"env.ARM_OIDC_TOKEN","value":"%jwt.token%"}
                 """;
-        tcPost("/httpAuth/app/rest/buildTypes/OidcTest_Build/parameters", envVarParamJson);
+        tc.post("/httpAuth/app/rest/buildTypes/OidcTest_Build/parameters", envVarParamJson);
     }
 
     /**
@@ -520,7 +193,7 @@ public class OidcFlowIT {
      */
     private static void attachSampleVcsRoot() throws Exception {
         // Disable automatic checkout so the build doesn't depend on outbound Git access
-        tcPut("/httpAuth/app/rest/buildTypes/OidcTest_Build/settings/checkoutMode", "MANUAL");
+        tc.put("/httpAuth/app/rest/buildTypes/OidcTest_Build/settings/checkoutMode", "MANUAL");
 
         // teamcity:branchSpec must be set for builds to carry branch information;
         // without it, SBuild.getBranch() returns null and the JWT branch claim is blank.
@@ -535,99 +208,12 @@ public class OidcFlowIT {
                      {"name":"authMethod","value":"ANONYMOUS"}
                  ]}}
                 """;
-        tcPost("/httpAuth/app/rest/vcs-roots", vcsRootJson);
+        tc.post("/httpAuth/app/rest/vcs-roots", vcsRootJson);
 
         final var vcsEntryJson = """
                 {"id":"OidcTest_VcsRoot","vcs-root":{"id":"OidcTest_VcsRoot"},"checkout-rules":""}
                 """;
-        tcPost("/httpAuth/app/rest/buildTypes/OidcTest_Build/vcs-root-entries", vcsEntryJson);
-    }
-
-    private static JSONObject parseJson(final String body) {
-        try {
-            return (JSONObject) new JSONParser(JSONParser.DEFAULT_PERMISSIVE_MODE).parse(body);
-        } catch (final net.minidev.json.parser.ParseException e) {
-            throw new IllegalStateException("Failed to parse JSON: " + body, e);
-        }
-    }
-
-    private static void tcPut(final String path, final String textBody) throws Exception {
-        final var response = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + path))
-                        .header("Authorization", superUserAuthHeader)
-                        .header("Content-Type", "text/plain")
-                        .PUT(java.net.http.HttpRequest.BodyPublishers.ofString(textBody))
-                        .build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IllegalStateException("TC PUT " + path + " returned " + response.statusCode() + ": " + response.body());
-        }
-    }
-
-    private static String tcPost(final String path, final String json) throws Exception {
-        final var response = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + path))
-                        .header("Authorization", superUserAuthHeader)
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "application/json")
-                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(json))
-                        .build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IllegalStateException("TC POST " + path + " returned " + response.statusCode() + ": " + response.body());
-        }
-        return response.body();
-    }
-
-    private static String tcGet(final String path) throws Exception {
-        final var response = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + path))
-                        .header("Authorization", superUserAuthHeader)
-                        .header("Accept", "application/json")
-                        .GET().build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IllegalStateException("TC GET " + path + " returned " + response.statusCode() + ": " + response.body());
-        }
-        return response.body();
-    }
-
-    private static void authorizeAgent() throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(3).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var response = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(
-                                    tcBaseUrl + "/httpAuth/app/rest/agents?locator=authorized:false"))
-                            .header("Authorization", superUserAuthHeader)
-                            .header("Accept", "application/json")
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            final var agentList = (JSONArray) parseJson(response.body()).get("agent");
-            if (agentList != null && !agentList.isEmpty()) {
-                final var agentId = String.valueOf(((JSONObject) agentList.getFirst()).get("id"));
-                tcHttp.send(
-                        java.net.http.HttpRequest.newBuilder()
-                                .uri(java.net.URI.create(
-                                        tcBaseUrl + "/httpAuth/app/rest/agents/id:" + agentId + "/authorized"))
-                                .header("Authorization", superUserAuthHeader)
-                                .header("Content-Type", "text/plain")
-                                .PUT(java.net.http.HttpRequest.BodyPublishers.ofString("true"))
-                                .build(),
-                        java.net.http.HttpResponse.BodyHandlers.ofString()
-                );
-                return;
-            }
-            java.util.concurrent.TimeUnit.SECONDS.sleep(5);
-        }
-        throw new IllegalStateException("No unauthorized TC agent appeared within 3 minutes");
+        tc.post("/httpAuth/app/rest/buildTypes/OidcTest_Build/vcs-root-entries", vcsEntryJson);
     }
 
     /**
@@ -654,7 +240,7 @@ public class OidcFlowIT {
                     java.util.concurrent.TimeUnit.SECONDS.sleep(5);
                     continue;
                 }
-                final var jwks = parseJson(jwksResponse.body());
+                final var jwks = Json.parse(jwksResponse.body());
                 final var keys = (JSONArray) jwks.get("keys");
                 if (keys == null || keys.isEmpty()) {
                     log("JWKS returned 200 but no keys yet (TC built-in?), retrying...");
@@ -671,7 +257,7 @@ public class OidcFlowIT {
                         java.net.http.HttpResponse.BodyHandlers.ofString()
                 );
                 if (discoveryResponse.statusCode() == 200) {
-                    final var issuer = (String) parseJson(discoveryResponse.body()).get("issuer");
+                    final var issuer = (String) Json.parse(discoveryResponse.body()).get("issuer");
                     if (TC_HTTPS_BASE.equals(issuer)) {
                         log("JWT plugin ready (JWKS has " + keys.size() + " key(s), issuer=" + issuer + ").");
                         return;
@@ -686,36 +272,6 @@ public class OidcFlowIT {
             java.util.concurrent.TimeUnit.SECONDS.sleep(5);
         }
         throw new IllegalStateException("JWT plugin did not become ready with correct issuer within 5 minutes");
-    }
-
-    private static void waitForAgentIdle() throws Exception {
-        log("Waiting for agent to become idle...");
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(5).toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            final var response = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(
-                                    tcBaseUrl + "/httpAuth/app/rest/agents"
-                                            + "?locator=authorized:true,connected:true,enabled:true"
-                                            + "&fields=agent(id,build)"))
-                            .header("Authorization", superUserAuthHeader)
-                            .header("Accept", "application/json")
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            final var agentList = (JSONArray) parseJson(response.body()).get("agent");
-            if (agentList != null) {
-                for (final var item : agentList) {
-                    final var agentObj = (JSONObject) item;
-                    if (agentObj.get("build") == null) {
-                        log("Agent is idle.");
-                        return;
-                    }
-                }
-            }
-            java.util.concurrent.TimeUnit.SECONDS.sleep(5);
-        }
-        throw new IllegalStateException("No idle TC agent within 5 minutes");
     }
 
     private static String octopusGet(final String path) throws Exception {
@@ -763,14 +319,14 @@ public class OidcFlowIT {
                 {"Username":"teamcity-ci","DisplayName":"TeamCity CI",
                  "IsActive":true,"IsService":true,"Identities":[]}
                 """);
-        final var userId = (String) parseJson(userResponse).get("Id");
+        final var userId = (String) Json.parse(userResponse).get("Id");
         if (userId == null) throw new IllegalStateException(
                 "Could not extract user Id from Octopus response: " + userResponse);
 
         // Fetch ExternalId — the GUID Octopus expects in the JWT aud claim
         final var identitiesResponse = octopusGet(
                 "/api/serviceaccounts/" + userId + "/oidcidentities/v1?skip=0&take=1");
-        final var externalId = (String) parseJson(identitiesResponse).get("ExternalId");
+        final var externalId = (String) Json.parse(identitiesResponse).get("ExternalId");
         if (externalId == null) throw new IllegalStateException(
                 "Could not extract ExternalId from Octopus response: " + identitiesResponse);
 
@@ -793,17 +349,16 @@ public class OidcFlowIT {
     @Test
     void teamCityJwtIsAcceptedByOctopus() throws Exception {
         // 1. Wait for agent idle, then trigger build
-        waitForAgentIdle();
+        tc.waitForAgentIdle();
         log("Triggering build...");
-        final var queueResponse = triggerBuildFor(BUILD_CONFIG_EXTERNAL_ID);
-        final var buildId = String.valueOf(parseJson(queueResponse).get("id"));
-        if (buildId == null || buildId.equals("null")) throw new IllegalStateException(
-                "Could not parse build id from: " + queueResponse);
+        final var buildId = tc.triggerBuild(BUILD_CONFIG_EXTERNAL_ID);
+        if (buildId.equals("null")) throw new IllegalStateException(
+                "Could not parse build id for " + BUILD_CONFIG_EXTERNAL_ID);
         log("Build queued, id=" + buildId);
 
         // 2. Wait for build to finish
         log("Waiting for build to finish...");
-        waitForBuildSuccess(buildId);
+        tc.waitForBuildSuccess(buildId);
         log("Build finished successfully.");
 
         // 3. Extract jwt.token from artifact
@@ -845,12 +400,11 @@ public class OidcFlowIT {
 
     @Test
     void jwtTokenIsMaskedInBuildLogAndResultingProperties() throws Exception {
-        waitForAgentIdle();
+        tc.waitForAgentIdle();
         log("Triggering build for masking assertions...");
-        final var queueResponse = triggerBuildFor(BUILD_CONFIG_EXTERNAL_ID);
-        final var buildId = String.valueOf(parseJson(queueResponse).get("id"));
+        final var buildId = tc.triggerBuild(BUILD_CONFIG_EXTERNAL_ID);
         log("Build queued, id=" + buildId);
-        waitForBuildSuccess(buildId);
+        tc.waitForBuildSuccess(buildId);
 
         // Artifact contents are exempt from masking, so this gives us the literal JWT
         // value that should be replaced with ******* everywhere it appears.
@@ -906,80 +460,6 @@ public class OidcFlowIT {
                     "Failed to fetch build log: " + response.statusCode() + " " + response.body());
         }
         return response.body();
-    }
-
-    private static String triggerBuildFor(final String buildTypeExternalId) throws Exception {
-        final var body = """
-                {"buildType":{"id":"%s"}}
-                """.formatted(buildTypeExternalId);
-        final var response = tcHttp.send(
-                java.net.http.HttpRequest.newBuilder()
-                        .uri(java.net.URI.create(tcBaseUrl + "/httpAuth/app/rest/buildQueue"))
-                        .header("Authorization", superUserAuthHeader)
-                        .header("Content-Type", "application/json")
-                        .header("Accept", "application/json")
-                        .POST(java.net.http.HttpRequest.BodyPublishers.ofString(body))
-                        .build(),
-                java.net.http.HttpResponse.BodyHandlers.ofString()
-        );
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IllegalStateException("Failed to queue build: " + response.statusCode() + " " + response.body());
-        }
-        return response.body();
-    }
-
-    private static void waitForBuildSuccess(final String buildId) throws Exception {
-        final var deadline = System.currentTimeMillis() + Duration.ofMinutes(3).toMillis();
-        String lastState = null;
-        while (System.currentTimeMillis() < deadline) {
-            final var response = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(
-                                    tcBaseUrl + "/httpAuth/app/rest/builds/id:" + buildId))
-                            .header("Authorization", superUserAuthHeader)
-                            .header("Accept", "application/json")
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            final var build = parseJson(response.body());
-            final var state = String.valueOf(build.get("state"));
-            final var status = String.valueOf(build.get("status"));
-            if (!state.equals(lastState)) {
-                log("Build " + buildId + " state=" + state + " status=" + status);
-                lastState = state;
-            }
-            if ("finished".equals(state)) {
-                saveBuildLog(buildId);
-                if (!"SUCCESS".equals(status)) {
-                    throw new IllegalStateException(
-                            "Build " + buildId + " finished with non-SUCCESS status: " + response.body());
-                }
-                return;
-            }
-            java.util.concurrent.TimeUnit.SECONDS.sleep(5);
-        }
-        throw new IllegalStateException("Build " + buildId + " did not finish within 3 minutes");
-    }
-
-    private static void saveBuildLog(final String buildId) {
-        try {
-            final var response = tcHttp.send(
-                    java.net.http.HttpRequest.newBuilder()
-                            .uri(java.net.URI.create(
-                                    tcBaseUrl + "/httpAuth/downloadBuildLog.html?buildId=" + buildId))
-                            .header("Authorization", superUserAuthHeader)
-                            .GET().build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString()
-            );
-            final var logDir = java.nio.file.Path.of(
-                    System.getProperty("java.io.tmpdir"), "tc-it-logs", CONTAINER_PREFIX);
-            Files.createDirectories(logDir);
-            Files.writeString(logDir.resolve("build-" + buildId + ".log"), response.body());
-            log("Build log saved to " + logDir.resolve("build-" + buildId + ".log")
-                    + " (status=" + response.statusCode() + ")");
-        } catch (final Exception e) {
-            log("Could not save build log: " + e.getMessage());
-        }
     }
 
     private static String extractJwtFromBuild(final String buildId) throws Exception {
@@ -1042,7 +522,7 @@ public class OidcFlowIT {
                         .GET().build(),
                 java.net.http.HttpResponse.BodyHandlers.ofString()
         );
-        final var tokenEndpointStr = (String) parseJson(discoveryResponse.body()).get("token_endpoint");
+        final var tokenEndpointStr = (String) Json.parse(discoveryResponse.body()).get("token_endpoint");
         if (tokenEndpointStr == null) throw new IllegalStateException(
                 "token_endpoint not found in Octopus discovery doc: " + discoveryResponse.body());
 
@@ -1072,7 +552,7 @@ public class OidcFlowIT {
                 .as("Octopus OIDC token exchange must return 200. Body: " + exchangeResponse.body())
                 .isEqualTo(200);
 
-        final var accessToken = (String) parseJson(exchangeResponse.body()).get("access_token");
+        final var accessToken = (String) Json.parse(exchangeResponse.body()).get("access_token");
         if (accessToken == null) throw new IllegalStateException(
                 "access_token not found in Octopus response: " + exchangeResponse.body());
         return accessToken;
@@ -1081,50 +561,6 @@ public class OidcFlowIT {
     // -------------------------------------------------------------------------
     // Helpers for the connection-inheritance integration test
     // -------------------------------------------------------------------------
-
-    /**
-     * Creates an OIDC Identity Token connection as a projectFeature on the given parent project.
-     *
-     * @return the generated connection id (PROJECT_EXT_* form) from the TC response
-     */
-    private static String createOidcConnection(
-            final String parentProjectId,
-            final String displayName,
-            final String audience,
-            final int ttlMinutes,
-            final String algorithm,
-            final String subjectDimensions) throws Exception {
-        final var json = """
-                {
-                     "type": "OAuthProvider",
-                     "properties":
-                     {
-                       "property": [
-                         {"name":"providerType","value":"oidc-identity-token"},
-                         {"name":"displayName","value":"%s"},
-                         {"name":"audience","value":"%s"},
-                         {"name":"ttl_minutes","value":"%d"},
-                         {"name":"algorithm","value":"%s"},
-                         {"name":"subject_dimensions","value":"%s"}
-                       ]
-                     }
-                   }
-                """.formatted(displayName, audience, ttlMinutes, algorithm, subjectDimensions);
-        final var responseBody = tcPost(
-                "/httpAuth/app/rest/projects/" + parentProjectId + "/projectFeatures", json);
-        final var id = (String) parseJson(responseBody).get("id");
-        if (id == null) throw new IllegalStateException(
-                "Could not extract connection id from TC response: " + responseBody);
-        return id;
-    }
-
-    /** Creates a TC project under the given parent project. */
-    private static void createProject(final String projectId, final String parentId) throws Exception {
-        final var json = """
-                {"id":"%s","name":"%s","parentProject":{"id":"%s"}}
-                """.formatted(projectId, projectId, parentId);
-        tcPost("/httpAuth/app/rest/projects", json);
-    }
 
     /**
      * Creates a build configuration that references an OIDC connection by id (no inline
@@ -1140,7 +576,7 @@ public class OidcFlowIT {
         final var buildConfigJson = """
                 {"id":"%s","name":"%s","project":{"id":"%s"}}
                 """.formatted(buildTypeId, buildTypeId, projectId);
-        tcPost("/httpAuth/app/rest/buildTypes", buildConfigJson);
+        tc.post("/httpAuth/app/rest/buildTypes", buildConfigJson);
 
         // Build feature — only connection_id; all other issuance settings come from the connection
         final var featureJson = """
@@ -1148,7 +584,7 @@ public class OidcFlowIT {
                   {"name":"connection_id","value":"%s"}
                 ]}}
                 """.formatted(connectionId);
-        tcPost("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/features", featureJson);
+        tc.post("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/features", featureJson);
 
         // Capture-jwt step — writes jwt.token to jwt.txt for artifact retrieval
         final var stepJson = """
@@ -1163,15 +599,15 @@ public class OidcFlowIT {
                     }
                 }
                 """;
-        tcPost("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/steps", stepJson);
+        tc.post("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/steps", stepJson);
 
         // Publish jwt.txt as an artifact
-        tcPut("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/settings/artifactRules", "jwt.txt");
+        tc.put("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/settings/artifactRules", "jwt.txt");
 
         // VCS root with branch tracking so the build has branch info and the JWT carries
         // a :branch: segment (required by the subject_dimensions=branch connection setting).
         // Manual checkout avoids any outbound Git dependency.
-        tcPut("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/settings/checkoutMode", "MANUAL");
+        tc.put("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/settings/checkoutMode", "MANUAL");
         final var vcsRootId = projectId + "_VcsRoot";
         final var vcsRootJson = """
                 {
@@ -1189,31 +625,30 @@ public class OidcFlowIT {
                       }
                     }
                 """.formatted(vcsRootId, projectId, projectId);
-        tcPost("/httpAuth/app/rest/vcs-roots", vcsRootJson);
+        tc.post("/httpAuth/app/rest/vcs-roots", vcsRootJson);
         final var vcsEntryJson = """
                 {"id":"%s","vcs-root":{"id":"%s"},"checkout-rules":""}
                 """.formatted(vcsRootId, vcsRootId);
-        tcPost("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/vcs-root-entries", vcsEntryJson);
+        tc.post("/httpAuth/app/rest/buildTypes/" + buildTypeId + "/vcs-root-entries", vcsEntryJson);
     }
 
     @Test
     void connectionInheritedFromParentProjectIsUsed() throws Exception {
         // Create an OIDC connection at _Root so it is accessible to all sub-projects
-        final var connectionId = createOidcConnection(
+        final var connectionId = tc.createOidcConnection(
                 "_Root", "IT Connection", "api://it-connection-audience", 30, "ES256", "branch");
         log("Created OIDC connection: " + connectionId);
 
-        createProject("OidcConnIT", "_Root");
+        tc.createProject("OidcConnIT", "_Root");
         createBuildTypeReferencingConnection("OidcConnIT", "OidcConnIT_Build", connectionId);
         log("Created project OidcConnIT and build type OidcConnIT_Build referencing connection " + connectionId);
 
-        waitForAgentIdle();
+        tc.waitForAgentIdle();
         log("Triggering connection-inheritance build...");
-        final var queueResponse = triggerBuildFor("OidcConnIT_Build");
-        final var buildId = String.valueOf(parseJson(queueResponse).get("id"));
+        final var buildId = tc.triggerBuild("OidcConnIT_Build");
         log("Build queued, id=" + buildId);
 
-        waitForBuildSuccess(buildId);
+        tc.waitForBuildSuccess(buildId);
         log("Build finished successfully.");
 
         final var jwt = extractJwtFromBuild(buildId);
@@ -1266,11 +701,10 @@ public class OidcFlowIT {
         log("Attaching VCS root for manual stack...");
         attachSampleVcsRoot();
         log("Triggering sample build for manual stack...");
-        waitForAgentIdle();
-        final var queueResponse = triggerBuildFor(BUILD_CONFIG_EXTERNAL_ID);
-        final var buildId = String.valueOf(parseJson(queueResponse).get("id"));
+        tc.waitForAgentIdle();
+        final var buildId = tc.triggerBuild(BUILD_CONFIG_EXTERNAL_ID);
         log("Sample build queued, id=" + buildId + " — waiting for it to finish...");
-        waitForBuildSuccess(buildId);
+        tc.waitForBuildSuccess(buildId);
         log("Sample build finished.");
 
         final int caddyPort = caddy.getMappedPort(443);
