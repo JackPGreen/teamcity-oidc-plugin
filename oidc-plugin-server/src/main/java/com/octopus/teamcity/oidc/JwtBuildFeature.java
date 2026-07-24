@@ -5,11 +5,7 @@ import jetbrains.buildServer.web.openapi.PluginDescriptor;
 import org.jetbrains.annotations.NotNull;
 import org.jetbrains.annotations.Nullable;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.Optional;
-import java.util.Set;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class JwtBuildFeature extends BuildFeature {
@@ -281,13 +277,41 @@ public class JwtBuildFeature extends BuildFeature {
             validateVariableNameIsUnique(buildType, params, errors);
             validateIssuerIsHttps(errors);
             if (usesConnection(params)) {
-                validateConnectionExists(buildType, params, errors);
+                final var connection = validateConnection(buildTypeOrTemplate, params, buildType, errors);
+                removeFieldsThatInheritFromConnection(params, errors, connection);
             } else {
                 validateTokenLifetime(params, errors);
                 validateSubjectDimensions(params, errors);
             }
             return errors;
         };
+    }
+
+    private static void removeFieldsThatInheritFromConnection(
+            final Map<String, String> params, final Collection<InvalidProperty> errors,
+            final Optional<OidcConnection> connection) {
+        if (errors.isEmpty() && connection.isPresent()) {
+            ConnectionInlineFieldCleaner.stripInheritedFields(params, connection.get());
+        }
+    }
+
+    @NotNull
+    private Optional<OidcConnection> validateConnection(
+            @NotNull final BuildTypeIdentity buildTypeOrTemplate,
+            final Map<String, String> params,
+            final SBuildType buildType,
+            final Collection<InvalidProperty> errors) {
+        // Resolve via the identity's project so stripping also runs for templates.
+        // Connection-exists stays build-config-only: a template's own project may not
+        // resolve a connection that only its consuming build types can.
+        final var connection = oidcConnectionsManager.resolve(buildTypeOrTemplate.getProject(),
+                params.getOrDefault("connection_id", "").trim());
+        if (buildType != null && connection.isEmpty()) {
+            errors.add(new InvalidProperty("connection_id",
+                    "Selected connection no longer exists in this project. "
+                            + "Pick another connection or clear the field to configure inline settings."));
+        }
+        return connection;
     }
 
     private static boolean usesConnection(@NotNull final java.util.Map<String, String> params) {
@@ -299,21 +323,6 @@ public class JwtBuildFeature extends BuildFeature {
             errors.add(new InvalidProperty("root_url",
                     "The OIDC issuer URL must use HTTPS for OIDC token issuance. " +
                             "Update the root URL in Administration → Global Settings, or set an override in the OIDC / JWT admin page."));
-        }
-    }
-
-    /** When a connection is selected it supplies the settings, so just verify it still resolves. */
-    private void validateConnectionExists(@Nullable final SBuildType bt,
-                                          @NotNull final java.util.Map<String, String> params,
-                                          @NotNull final Collection<InvalidProperty> errors) {
-        if (bt == null) {
-            return;
-        }
-        final var connectionId = params.getOrDefault("connection_id", "").trim();
-        if (oidcConnectionsManager.resolve(bt.getProject(), connectionId).isEmpty()) {
-            errors.add(new InvalidProperty("connection_id",
-                    "Selected connection no longer exists in this project. "
-                            + "Pick another connection or clear the field to configure inline settings."));
         }
     }
 

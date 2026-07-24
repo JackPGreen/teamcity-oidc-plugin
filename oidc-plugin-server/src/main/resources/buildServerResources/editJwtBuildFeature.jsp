@@ -105,7 +105,7 @@
         <th><label for="ttl_minutes">Token lifetime (minutes):</label></th>
         <td>
             <props:textProperty name="ttl_minutes" value="${empty propertiesBean.properties['ttl_minutes'] ? '10' : propertiesBean.properties['ttl_minutes']}" style="width:5em;"/>
-            <span class="smallNote">How long the JWT is valid for.<br/>Default: 10 minutes; max: <c:out value="${maxTokenLifetimeMinutes}"/> minutes (<c:choose><c:when test="${currentUserCanConfigureMax}"><a href="${pageContext.request.contextPath}/admin/admin.html?item=jwtPlugin">configurable</a></c:when><c:otherwise>configurable by admins</c:otherwise></c:choose>).</span>
+            <span class="smallNote jwt-field-note">How long the JWT is valid for.<br/><span id="jwtTtlDefaultNote">Default: 10 minutes</span>; max: <c:out value="${maxTokenLifetimeMinutes}"/> minutes (<c:choose><c:when test="${currentUserCanConfigureMax}"><a href="${pageContext.request.contextPath}/admin/admin.html?item=jwtPlugin">configurable</a></c:when><c:otherwise>configurable by admins</c:otherwise></c:choose>).</span>
             <span class="error" id="error_ttl_minutes"></span>
         </td>
     </tr>
@@ -125,7 +125,7 @@
                 <props:option value="RS384" selected="${propertiesBean.properties['algorithm'] == 'RS384'}">RS384 (RSA-3072)</props:option>
                 <props:option value="ES256" selected="${propertiesBean.properties['algorithm'] == 'ES256'}">ES256 (ECDSA P-256)</props:option>
             </props:selectProperty>
-            <span class="smallNote">ES256 produces smaller tokens and is widely supported by cloud providers. RS384 uses a 3072-bit RSA key.</span>
+            <span class="smallNote jwt-field-note">ES256 produces smaller tokens and is widely supported by cloud providers. RS384 uses a 3072-bit RSA key.</span>
         </td>
     </tr>
     <tr>
@@ -425,12 +425,13 @@
             const subjectCheckboxes = $j('.jwt-subject-dimension-cb');
 
             if (selectedConnection) {
-                cacheInline($ttl, $ttl.val());
                 cacheInline($aud, $aud.val());
                 cacheInline($alg, $alg.val());
                 cacheInline($subj, $subj.val());
 
-                $ttl.val(selectedConnection.ttl).prop('readonly', true).addClass('jwt-locked');
+                // TTL is an override, not connection-authoritative: editable, with the connection's TTL as the "inherit" placeholder.
+                $ttl.attr('placeholder', selectedConnection.ttl).prop('readonly', false).removeClass('jwt-locked');
+                $j('#jwtTtlDefaultNote').text("Blank inherits the connection's value");
                 $aud.val(selectedConnection.audience).prop('readonly', true).addClass('jwt-locked');
                 $alg.val(selectedConnection.algorithm).prop('disabled', true).addClass('jwt-locked');
                 $subj.val(selectedConnection.subjectDimensions || '');
@@ -440,11 +441,11 @@
                     el.disabled = true;
                 });
             } else {
-                restoreInline($ttl);
                 restoreInline($aud);
                 restoreInline($alg);
                 restoreInline($subj);
-                $ttl.prop('readonly', false).removeClass('jwt-locked');
+                $ttl.attr('placeholder', '10').prop('readonly', false).removeClass('jwt-locked');
+                $j('#jwtTtlDefaultNote').text('Default: 10 minutes');
                 $aud.prop('readonly', false).removeClass('jwt-locked');
                 $alg.prop('disabled', false).removeClass('jwt-locked');
                 const subjectDimensions = $subj.val().split(',').filter(s => s.length > 0);
