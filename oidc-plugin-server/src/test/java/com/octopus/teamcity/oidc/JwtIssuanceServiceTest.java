@@ -320,4 +320,51 @@ public class JwtIssuanceServiceTest {
         assertThat(Duration.between(parsed.getIssueTime().toInstant(), parsed.getExpirationTime().toInstant()).toMinutes())
                 .isEqualTo(OidcSettings.DEFAULT_MAX_TOKEN_LIFETIME_MINUTES);
     }
+
+    private void enableConnectionFeature(final java.util.Set<String> subjectDimensions) {
+        when(runningBuild.getBuildFeaturesOfType("oidc-plugin")).thenReturn(List.of(featureDescriptor));
+        when(featureDescriptor.getParameters()).thenReturn(Map.of("connection_id", CONNECTION_ID));
+        when(runningBuild.getTriggeredBy()).thenReturn(mock(TriggeredBy.class));
+        when(runningBuild.getProjectId()).thenReturn("project812");
+        when(runningBuild.getBuildTypeId()).thenReturn("bt9031");
+        final var project = mock(jetbrains.buildServer.serverSide.SProject.class);
+        final var buildType = mock(jetbrains.buildServer.serverSide.SBuildType.class);
+        when(runningBuild.getBuildType()).thenReturn(buildType);
+        when(buildType.getProject()).thenReturn(project);
+        when(connectionsManager.resolve(project, CONNECTION_ID)).thenReturn(java.util.Optional.of(
+                new OidcConnection(CONNECTION_ID, CONNECTION_PROJECT_ID, "Test",
+                        new IssuanceSettings("api://octopus", 10, "RS256", subjectDimensions), "conn.token")));
+    }
+
+    @Test
+    public void connectionDimensionPrependsOwningProjectAndConnectionId() throws Exception {
+        enableConnectionFeature(java.util.Set.of("connection"));
+
+        final var token = service.tokensFor(runningBuild).get("conn.token");
+
+        assertThat(com.nimbusds.jwt.SignedJWT.parse(token).getJWTClaimsSet().getSubject())
+                .isEqualTo("connection_project:" + CONNECTION_PROJECT_ID + ":connection:" + CONNECTION_ID
+                        + ":project:project812:build_type:bt9031");
+    }
+
+    @Test
+    public void connectionDimensionComesBeforeOtherDimensions() throws Exception {
+        enableConnectionFeature(java.util.Set.of("connection", "trigger_type"));
+
+        final var token = service.tokensFor(runningBuild).get("conn.token");
+
+        assertThat(com.nimbusds.jwt.SignedJWT.parse(token).getJWTClaimsSet().getSubject())
+                .startsWith("connection_project:" + CONNECTION_PROJECT_ID + ":connection:" + CONNECTION_ID
+                        + ":project:project812:build_type:bt9031:trigger_type:");
+    }
+
+    @Test
+    public void connectionSegmentsOmittedWhenDimensionNotEnabled() throws Exception {
+        enableConnectionFeature(java.util.Set.of());
+
+        final var token = service.tokensFor(runningBuild).get("conn.token");
+
+        assertThat(com.nimbusds.jwt.SignedJWT.parse(token).getJWTClaimsSet().getSubject())
+                .isEqualTo("project:project812:build_type:bt9031");
+    }
 }

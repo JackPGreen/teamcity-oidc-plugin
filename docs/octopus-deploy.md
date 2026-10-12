@@ -21,4 +21,14 @@ Octopus supports wildcards in the subject (`*` for many characters, `?` for one)
 project:project7:build_type:bt42:branch:*:trigger_type:user
 ```
 
+To trust every build that uses a given OIDC Identity Token connection, enable the **connection** subject dimension on the connection and set the subject to:
+
+```
+connection_project:project3:connection:PROJECT_EXT_12:*
+```
+
+This keeps working as sub-projects and build configurations are added under the connection's project, without new identities.
+
+The identity then trusts the whole project tree under the connection's project: anyone who can create or edit a build configuration anywhere in that tree can select the connection and get a token that this subject matches. Put the connection on the narrowest project that covers the builds that need it, and only use this policy when everyone with edit rights in that tree should be able to authenticate as the Octopus service account.
+
 Prefer narrow patterns over broad wildcards to reduce the risk of unintended trust.

@@ -12,15 +12,8 @@ public class JwtBuildFeature extends BuildFeature {
 
     static final String FEATURE_TYPE = "oidc-plugin";
 
-    /**
-     * Optional dimensions that may be appended to the composite {@code sub} claim. Listed in
-     * a configured-order that matches the emitted sub layout. Used by:
-     * <ul>
-     *   <li>{@link JwtIssuanceService} to decide which segments to compose into {@code sub}</li>
-     *   <li>{@link #getParametersProcessor} to validate user input at save time</li>
-     * </ul>
-     */
-    public static final Set<String> ALL_OPTIONAL_SUBJECT_DIMENSIONS = Set.of("branch", "trigger_type");
+    public static final Set<String> SUBJECT_DIMENSIONS_ALLOWED_ON_BUILD_FEATURES = Set.of("branch", "trigger_type");
+    public static final Set<String> SUBJECT_DIMENSIONS_ALLOWED_ON_CONNECTIONS = Set.of("branch", "trigger_type", "connection");
 
     private static volatile OidcIssuerUrlProvider staticIssuerUrlProvider;
     private static volatile SBuildServer staticBuildServer;
@@ -191,9 +184,9 @@ public class JwtBuildFeature extends BuildFeature {
         }
         final var conn = resolved.get();
         final var sb = new StringBuilder("connection: ").append(conn.displayName());
-        // Show the sub claim's template form — concrete IDs and runtime values aren't
-        // available here, but the template matches what the consumer will see.
-        sb.append("\nsub: ").append(subjectTemplate(String.join(",", conn.settings().subjectDimensions())));
+        // Build-specific IDs and runtime values aren't available here, so those segments stay as placeholders.
+        sb.append("\nsub: ").append(subjectTemplate(
+                String.join(",", conn.settings().subjectDimensions()), conn.projectId(), conn.id()));
         sb.append("\naud: ").append(conn.settings().audience());
         // Variable name last, wrapped in % so it reads like the reference admins use.
         sb.append("\nvar: %").append(variableName).append('%');
@@ -237,17 +230,35 @@ public class JwtBuildFeature extends BuildFeature {
     }
 
     static String subjectTemplate(@Nullable final String subjectDimensionsParam) {
+        return subjectTemplate(subjectDimensionsParam, "<connection_project_id>", "<connection_id>");
+    }
+
+    static String subjectTemplate(@Nullable final String subjectDimensionsParam,
+                                  @NotNull final String connectionProjectId,
+                                  @NotNull final String connectionId) {
         final var raw = subjectDimensionsParam == null ? "" : subjectDimensionsParam.trim();
         final boolean includeBranch;
         final boolean includeTriggerType;
+        final boolean includeConnection;
         if (raw.isEmpty()) {
-            includeBranch = includeTriggerType = false;
+            includeBranch = false;
+            includeTriggerType = false;
+            includeConnection = false;
         } else {
             final var dims = java.util.Arrays.asList(raw.split("\\s*,\\s*"));
             includeBranch = dims.contains("branch");
             includeTriggerType = dims.contains("trigger_type");
+            includeConnection = dims.contains("connection");
         }
-        final var sb = new StringBuilder("project:<project_id>:build_type:<build_type_id>");
+        final var sb = new StringBuilder();
+        if (includeConnection) {
+            sb.append("connection_project:");
+            sb.append(connectionProjectId);
+            sb.append(":connection:");
+            sb.append(connectionId);
+            sb.append(":");
+        }
+        sb.append("project:<project_id>:build_type:<build_type_id>");
         if (includeBranch) sb.append(":branch:<branch>");
         if (includeTriggerType) sb.append(":trigger_type:<trigger_type>");
         return sb.toString();
@@ -381,12 +392,12 @@ public class JwtBuildFeature extends BuildFeature {
         }
         final var unknown = Arrays.stream(subjectDimensions.split("\\s*,\\s*"))
                 .filter(s -> !s.isBlank())
-                .filter(s -> !ALL_OPTIONAL_SUBJECT_DIMENSIONS.contains(s))
+                .filter(s -> !SUBJECT_DIMENSIONS_ALLOWED_ON_BUILD_FEATURES.contains(s))
                 .collect(Collectors.toCollection(java.util.LinkedHashSet::new));
         if (!unknown.isEmpty()) {
             errors.add(new InvalidProperty("subject_dimensions",
                     "Unknown subject dimension(s): " + String.join(", ", unknown)
-                            + ". Allowed values: " + String.join(", ", ALL_OPTIONAL_SUBJECT_DIMENSIONS)
+                            + ". Allowed values: " + String.join(", ", SUBJECT_DIMENSIONS_ALLOWED_ON_BUILD_FEATURES)
                             + ", or leave blank for no optional dimensions."));
         }
     }

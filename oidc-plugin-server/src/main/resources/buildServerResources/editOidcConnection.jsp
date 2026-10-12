@@ -69,6 +69,11 @@
                 <span class="smallNote jwt-subject-dimensions-tooltip"
                       title="Possible values: user, snapshotDependency, vcsTrigger, schedulingTrigger, retryBuildTrigger, buildDependencyTrigger, finishBuildTrigger, perforceShelveTrigger, unknown">[?]</span>
             </li>
+            <li>
+                <label><input type="checkbox" class="oidc-conn-dimension-cb" value="connection"/> connection</label>
+                <span class="smallNote jwt-subject-dimensions-tooltip"
+                      title="Prefixes the sub with this connection's id and its owning project's internal id, so a trust policy such as connection_project:project12:connection:PROJECT_EXT_3:* matches every build using this connection, including builds in sub-projects created later">[?]</span>
+            </li>
         </ul>
         <div class="jwt-subject-preview">
             <label for="oidcConnSubjectPreview">Resulting <code>sub</code> claim:</label>
@@ -115,6 +120,9 @@
 
         const updatePreview = () => {
             let sub = 'project:<project_id>:build_type:<build_type_id>';
+            if ($j('.oidc-conn-dimension-cb[value="connection"]').is(':checked')) {
+                sub = 'connection_project:<connection_project_id>:connection:<connection_id>:' + sub;
+            }
             if ($j('.oidc-conn-dimension-cb[value="branch"]').is(':checked')) {
                 sub += ':branch:<branch>';
             }

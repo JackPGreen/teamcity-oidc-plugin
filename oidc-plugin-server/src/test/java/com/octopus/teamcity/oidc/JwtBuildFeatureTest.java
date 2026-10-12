@@ -280,6 +280,18 @@ public class JwtBuildFeatureTest {
     }
 
     @Test
+    public void describeParametersShowsResolvedConnectionPrefix() {
+        when(oidcConnectionsManager.resolve(rootProject, CONNECTION_ID))
+                .thenReturn(java.util.Optional.of(new OidcConnection(CONNECTION_ID, CONNECTION_PROJECT_ID, "Octopus production",
+                        new IssuanceSettings("api://from-conn", 15, "ES256", java.util.Set.of("connection")), "jwt.token")));
+
+        final var description = feature.describeParameters(Map.of("connection_id", CONNECTION_ID));
+
+        assertThat(description).contains("sub: connection_project:" + CONNECTION_PROJECT_ID + ":connection:" + CONNECTION_ID
+                + ":project:<project_id>:build_type:<build_type_id>\n");
+    }
+
+    @Test
     public void allowsMultipleFeaturesPerBuildType() {
         final var feature = newFeature("https://teamcity.example.com");
         assertThat(feature.isMultipleFeaturesPerBuildTypeAllowed()).isTrue();
@@ -460,5 +472,17 @@ public class JwtBuildFeatureTest {
         assertThat(params).doesNotContainKeys("audience", "algorithm", "subject_dimensions");
         assertThat(params).containsEntry("connection_id", CONNECTION_ID);
         assertThat(params).containsEntry("token_variable_name", "keep.me");
+    }
+
+    @Test
+    public void validationRejectsConnectionDimensionOnInlineFeature() {
+        final var feature = newFeature("https://teamcity.example.com");
+        final var processor = feature.getParametersProcessor(buildTypeOrTemplate);
+        final var errors = processor.process(Map.of("subject_dimensions", "connection"));
+
+        assertThat(errors)
+                .singleElement()
+                .extracting(InvalidProperty::getPropertyName)
+                .isEqualTo("subject_dimensions");
     }
 }
